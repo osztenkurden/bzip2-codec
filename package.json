@@ -1,6 +1,6 @@
 {
 	"name": "bzip2-codec",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "Dependency-free bzip2 compression and decompression for Web Streams",
 	"type": "module",
 	"engines": {
