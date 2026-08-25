@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.0.0...v1.0.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* deploy cache ([d94ed45](https://github.com/osztenkurden/bzip2-codec/commit/d94ed453159adeda398a5fa23ad8d7671b3f7027))
+
 ## 1.0.0 (2026-08-25)
 
 
