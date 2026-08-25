@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { BzipError, createDecompressionStream, decompress } from '../src/index.ts';
+import { BzipError, compress, createDecompressionStream, decompress } from '../src/index.ts';
 
 const SAMPLE = Buffer.from('QlpoOTFBWSZTWeopNX0AAAJTgAAQQAAEACJgDAAgADEGTEEBkeoEPEnfEAvF3JFOFCQ6ik1fQA==', 'base64');
 const EXPECTED = new TextEncoder().encode('This is a test\n');
@@ -39,6 +39,46 @@ test('decompresses input fragmented at every byte boundary', async () => {
 	assert.deepEqual(await outputPromise, EXPECTED);
 });
 
+test('only yields while decoding multiple blocks when configured', async () => {
+	const input = new Uint8Array(250_000);
+	for (let index = 0; index < input.length; index++) input[index] = (index * 31 + (index >>> 8) * 17) & 0xff;
+	const encoded = compress(input, { blockSize: 1 });
+
+	const synchronousStream = createDecompressionStream();
+	const synchronousWriter = synchronousStream.writable.getWriter();
+	const synchronousOutput = collectStream(synchronousStream.readable);
+	let synchronousTimerRan = false;
+	const synchronousTimer = new Promise<void>(resolve => {
+		setTimeout(() => {
+			synchronousTimerRan = true;
+			resolve();
+		}, 0);
+	});
+
+	await synchronousWriter.write(encoded);
+	assert.equal(synchronousTimerRan, false);
+	await synchronousWriter.close();
+	await synchronousTimer;
+	assert.deepEqual(await synchronousOutput, input);
+
+	const stream = createDecompressionStream({ yieldAfterMs: 0 });
+	const writer = stream.writable.getWriter();
+	const outputPromise = collectStream(stream.readable);
+	let timerRan = false;
+	const timer = new Promise<void>(resolve => {
+		setTimeout(() => {
+			timerRan = true;
+			resolve();
+		}, 0);
+	});
+
+	await writer.write(encoded);
+	assert.equal(timerRan, true);
+	await writer.close();
+	await timer;
+	assert.deepEqual(await outputPromise, input);
+});
+
 test('rejects corrupt input with a structured error', () => {
 	const corrupt = Uint8Array.from(SAMPLE);
 	corrupt[0] = corrupt[0]! ^ 0xff;
@@ -52,7 +92,7 @@ test('rejects corrupt input with a structured error', () => {
 test('reports a block checksum mismatch without emitting corrupt output', async () => {
 	const corrupt = Uint8Array.from(SAMPLE);
 	corrupt[10] = corrupt[10]! ^ 1;
-	const stream = createDecompressionStream();
+	const stream = createDecompressionStream({ yieldAfterMs: 0 });
 	const writer = stream.writable.getWriter();
 	const outputPromise = collectStream(stream.readable);
 
@@ -71,7 +111,7 @@ test('rejects truncated input only when final input is declared', () => {
 });
 
 test('reports truncated streamed input when the source closes', async () => {
-	const stream = createDecompressionStream();
+	const stream = createDecompressionStream({ yieldAfterMs: 0 });
 	const writer = stream.writable.getWriter();
 	const outputPromise = collectStream(stream.readable);
 
@@ -163,4 +203,7 @@ test('validates decompression options', () => {
 	assert.throws(() => decompress(SAMPLE, { concatenated: 'yes' as never }), TypeError);
 	assert.throws(() => decompress(SAMPLE, { trailingData: 'accept' as never }), TypeError);
 	assert.throws(() => decompress(SAMPLE, null as never), TypeError);
+	assert.throws(() => createDecompressionStream({ yieldAfterMs: -1 }), RangeError);
+	assert.throws(() => createDecompressionStream({ yieldAfterMs: Number.POSITIVE_INFINITY }), RangeError);
+	assert.throws(() => createDecompressionStream({ yieldAfterMs: Number.NaN }), RangeError);
 });

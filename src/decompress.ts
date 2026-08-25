@@ -1,7 +1,7 @@
 import { DecoderEngine } from './codec/decoder.ts';
 import { concatChunks } from './internal/chunks.ts';
-import { resolveDecompressOptions } from './options.ts';
-import type { DecompressOptions } from './types.ts';
+import { resolveDecompressionStreamOptions, resolveDecompressOptions } from './options.ts';
+import type { DecompressionStreamOptions, DecompressOptions } from './types.ts';
 
 export const decompress = (input: Uint8Array, options?: DecompressOptions): Uint8Array => {
 	if (!(input instanceof Uint8Array)) throw new TypeError('Bzip2 input must be a Uint8Array');
@@ -19,8 +19,22 @@ export const decompress = (input: Uint8Array, options?: DecompressOptions): Uint
 	return concatChunks(chunks, outputLength);
 };
 
-export const createDecompressionStream = (options?: DecompressOptions): TransformStream<Uint8Array, Uint8Array> => {
-	const decoder = new DecoderEngine(resolveDecompressOptions(options));
+export const createDecompressionStream = (
+	options?: DecompressionStreamOptions
+): TransformStream<Uint8Array, Uint8Array> => {
+	const { yieldAfterMs, ...decoderOptions } = resolveDecompressionStreamOptions(options);
+	const decoder = new DecoderEngine(decoderOptions);
+
+	if (yieldAfterMs !== undefined) {
+		return new TransformStream<Uint8Array, Uint8Array>({
+			async transform(chunk, controller) {
+				await decoder.pushCooperatively(chunk, output => controller.enqueue(output), yieldAfterMs);
+			},
+			async flush(controller) {
+				await decoder.finishCooperatively(output => controller.enqueue(output), yieldAfterMs);
+			}
+		});
+	}
 
 	return new TransformStream<Uint8Array, Uint8Array>({
 		transform(chunk, controller) {

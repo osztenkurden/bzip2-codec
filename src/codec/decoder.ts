@@ -56,6 +56,8 @@ const HUFFMAN_FAST_MASK = (1 << HUFFMAN_FAST_BITS) - 1;
 const HUFFMAN_SYMBOL_MASK = (1 << HUFFMAN_SYMBOL_BITS) - 1;
 const MAX_CACHED_BLOCK_EXPANSION = 2;
 
+const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+
 const moveToFront = (values: Uint8Array, index: number): number => {
 	const value = values[index]!;
 
@@ -532,27 +534,51 @@ export class DecoderEngine {
 	}
 
 	push(chunk: Uint8Array, sink: ByteSink): void {
+		if (!this.#appendInput(chunk)) return;
+		this.#process(false, sink);
+	}
+
+	async pushCooperatively(chunk: Uint8Array, sink: ByteSink, yieldAfterMs: number): Promise<void> {
+		if (!this.#appendInput(chunk)) return;
+		await this.#processCooperatively(false, sink, yieldAfterMs);
+	}
+
+	finish(sink: ByteSink): void {
+		if (!this.#beginFinish()) return;
+		this.#process(true, sink);
+		this.#completeFinish();
+	}
+
+	async finishCooperatively(sink: ByteSink, yieldAfterMs: number): Promise<void> {
+		if (!this.#beginFinish()) return;
+		await this.#processCooperatively(true, sink, yieldAfterMs);
+		this.#completeFinish();
+	}
+
+	#appendInput(chunk: Uint8Array): boolean {
 		if (!(chunk instanceof Uint8Array)) throw new TypeError('Bzip2 input chunks must be Uint8Array values');
-		if (this.#state === 'ignoring-trailing') return;
+		if (this.#state === 'ignoring-trailing') return false;
 		if (this.#state === 'finished' || this.#state === 'failed') {
 			throw this.#createError('INVALID_STATE', 'Cannot write to a decoder after it has finished');
 		}
 
 		this.#input.append(chunk);
-		this.#process(false, sink);
+		return true;
 	}
 
-	finish(sink: ByteSink): void {
-		if (this.#state === 'finished') return;
+	#beginFinish(): boolean {
+		if (this.#state === 'finished') return false;
 		if (this.#state === 'ignoring-trailing') {
 			this.#state = 'finished';
-			return;
+			return false;
 		}
 		if (this.#state === 'failed') {
 			throw this.#createError('INVALID_STATE', 'Cannot finish a decoder that has already failed');
 		}
+		return true;
+	}
 
-		this.#process(true, sink);
+	#completeFinish(): void {
 		if ((this.#state as DecoderState) === 'ignoring-trailing') {
 			this.#state = 'finished';
 			return;
@@ -564,16 +590,24 @@ export class DecoderEngine {
 		}
 	}
 
-	#process(final: boolean, sink: ByteSink): void {
+	async #processCooperatively(final: boolean, sink: ByteSink, yieldAfterMs: number): Promise<void> {
+		for (;;) {
+			const deadline = performance.now() + yieldAfterMs;
+			if (!this.#process(final, sink, deadline)) return;
+			await yieldToEventLoop();
+		}
+	}
+
+	#process(final: boolean, sink: ByteSink, deadline?: number): boolean {
 		try {
 			for (;;) {
 				if (this.#state === 'header') {
-					if (!this.#readHeader(final)) return;
+					if (!this.#readHeader(final)) return false;
 					continue;
 				}
 
 				if (this.#state === 'blocks') {
-					if (!final && this.#input.byteLength < this.#minimumBytesForBlockRetry) return;
+					if (!final && this.#input.byteLength < this.#minimumBytesForBlockRetry) return false;
 
 					const reader = new BitReader(this.#input.view, this.#input.bitOffset);
 					let result: BlockResult;
@@ -610,7 +644,7 @@ export class DecoderEngine {
 							maximumCompressedBytes,
 							this.#input.byteLength + retryGrowth
 						);
-						return;
+						return false;
 					}
 
 					this.#minimumBytesForBlockRetry = 0;
@@ -628,6 +662,7 @@ export class DecoderEngine {
 						this.#block++;
 						this.#outputLength += result.outputLength;
 						result.emit(sink, this.#options.outputChunkSize);
+						if (deadline !== undefined && performance.now() >= deadline) return true;
 						continue;
 					}
 
@@ -658,12 +693,12 @@ export class DecoderEngine {
 						if (this.#input.byteLength > 0) this.#handleTrailingData();
 						if (final) this.#state = 'finished';
 						else if (this.#options.trailingData === 'ignore') this.#state = 'ignoring-trailing';
-						return;
+						return false;
 					}
 
 					if (this.#input.byteLength === 0) {
 						if (final) this.#state = 'finished';
-						return;
+						return false;
 					}
 
 					this.#state = 'header';
@@ -672,14 +707,14 @@ export class DecoderEngine {
 
 				if (this.#state === 'ignoring-trailing') {
 					if (final) this.#state = 'finished';
-					return;
+					return false;
 				}
 
-				return;
+				return false;
 			}
 		} catch (error) {
 			if (isNeedMoreInput(error)) {
-				if (!final) return;
+				if (!final) return false;
 				this.#state = 'failed';
 				throw this.#createError('UNEXPECTED_EOF', 'Compressed input ended unexpectedly');
 			}

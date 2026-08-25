@@ -87,9 +87,22 @@ interface DecompressOptions {
 	/** Maximum size of each emitted chunk. Default: 65,536. */
 	outputChunkSize?: number;
 }
+
+interface DecompressionStreamOptions extends DecompressOptions {
+	/** Yield between decoded blocks after this much work. Disabled by default. */
+	yieldAfterMs?: number;
+}
 ```
 
 Set `maxOutputBytes` when decoding untrusted input to enforce an application-specific expansion limit. A block is checksum-validated before any of its output is emitted.
+
+Set `yieldAfterMs` when decompression shares a JavaScript thread with latency-sensitive work:
+
+```ts
+await source.pipeThrough(createDecompressionStream({ yieldAfterMs: 8 })).pipeTo(destination);
+```
+
+When the elapsed decoding time reaches the configured budget, the transformer yields to the event loop after the current checksum-validated bzip2 block. An individual block remains an atomic unit, so the interval is a responsiveness target rather than a hard deadline. Omitting `yieldAfterMs` retains the synchronous, maximum-throughput path without scheduling timers.
 
 ### `compress(input, options?)`
 

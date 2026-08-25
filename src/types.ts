@@ -18,6 +18,11 @@ export interface DecompressOptions {
 	outputChunkSize?: number;
 }
 
+export interface DecompressionStreamOptions extends DecompressOptions {
+	/** Yield between decoded blocks after this much work. Zero yields after every block; omit to never yield. */
+	yieldAfterMs?: number;
+}
+
 export interface ResolvedCompressOptions {
 	blockSize: BlockSize;
 	outputChunkSize: number;
@@ -28,4 +33,8 @@ export interface ResolvedDecompressOptions {
 	trailingData: 'error' | 'ignore';
 	maxOutputBytes: number;
 	outputChunkSize: number;
+}
+
+export interface ResolvedDecompressionStreamOptions extends ResolvedDecompressOptions {
+	yieldAfterMs: number | undefined;
 }

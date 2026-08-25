@@ -2,8 +2,10 @@ import { DEFAULT_OUTPUT_CHUNK_SIZE } from './format/constants.ts';
 import type {
 	BlockSize,
 	CompressOptions,
+	DecompressionStreamOptions,
 	DecompressOptions,
 	ResolvedCompressOptions,
+	ResolvedDecompressionStreamOptions,
 	ResolvedDecompressOptions
 } from './types.ts';
 
@@ -54,4 +56,17 @@ export const resolveDecompressOptions = (options: DecompressOptions = {}): Resol
 		maxOutputBytes,
 		outputChunkSize: validateChunkSize(options.outputChunkSize)
 	};
+};
+
+export const resolveDecompressionStreamOptions = (
+	options: DecompressionStreamOptions = {}
+): ResolvedDecompressionStreamOptions => {
+	const resolved = resolveDecompressOptions(options);
+	const { yieldAfterMs } = options;
+
+	if (yieldAfterMs !== undefined && (!Number.isFinite(yieldAfterMs) || yieldAfterMs < 0)) {
+		throw new RangeError('yieldAfterMs must be a non-negative finite number');
+	}
+
+	return { ...resolved, yieldAfterMs };
 };
