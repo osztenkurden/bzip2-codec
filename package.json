@@ -23,6 +23,7 @@
 		"test:large": "BZIP_LARGE_TESTS=1 node --test test/large.test.ts",
 		"memory:decompress": "bun scripts/memory-report.ts",
 		"typecheck": "tsc",
+		"benchmark:decompress": "bun scripts/benchmark-decompression.ts",
 		"build": "tsdown src/index.ts",
 		"pack:check": "npm pack --dry-run",
 		"format": "prettier --write .",

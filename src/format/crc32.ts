@@ -29,15 +29,15 @@ export class BzipCrc32 {
 	}
 
 	updateRun(byte: number, count: number): void {
-		while (count-- > 0) {
-			this.update(byte);
-		}
+		let crc = this.#crc;
+		while (count-- > 0) crc = ((crc << 8) ^ LOOKUP[((crc >>> 24) ^ byte) & 0xff]!) >>> 0;
+		this.#crc = crc;
 	}
 
 	updateBytes(bytes: Uint8Array): void {
-		for (const byte of bytes) {
-			this.update(byte);
-		}
+		let crc = this.#crc;
+		for (const byte of bytes) crc = ((crc << 8) ^ LOOKUP[((crc >>> 24) ^ byte) & 0xff]!) >>> 0;
+		this.#crc = crc;
 	}
 }
 

@@ -19,6 +19,7 @@ import type { ByteSink } from '../internal/bit-writer.ts';
 import type { ResolvedDecompressOptions } from '../types.ts';
 
 interface HuffmanTable {
+	readonly fastLookup: Uint16Array;
 	readonly minimumLength: number;
 	readonly maximumLength: number;
 	readonly limits: Uint32Array;
@@ -48,6 +49,12 @@ type ErrorFactory = (
 	reader?: BitReader,
 	details?: { expected?: number; actual?: number }
 ) => BzipError;
+
+const HUFFMAN_FAST_BITS = 10;
+const HUFFMAN_SYMBOL_BITS = 9;
+const HUFFMAN_FAST_MASK = (1 << HUFFMAN_FAST_BITS) - 1;
+const HUFFMAN_SYMBOL_MASK = (1 << HUFFMAN_SYMBOL_BITS) - 1;
+const MAX_CACHED_BLOCK_EXPANSION = 2;
 
 const moveToFront = (values: Uint8Array, index: number): number => {
 	const value = values[index]!;
@@ -94,6 +101,7 @@ const createHuffmanTable = (lengths: Uint8Array, error: ErrorFactory, reader: Bi
 
 	const limits = new Uint32Array(MAX_HUFFMAN_CODE_BITS + 1);
 	const bases = new Uint32Array(MAX_HUFFMAN_CODE_BITS + 1);
+	const fastLookup = new Uint16Array(1 << HUFFMAN_FAST_BITS);
 	let code = 0;
 	let symbolsBeforeLength = 0;
 
@@ -101,11 +109,23 @@ const createHuffmanTable = (lengths: Uint8Array, error: ErrorFactory, reader: Bi
 		const count = counts[length]!;
 		limits[length] = code + count - 1;
 		bases[length] = code - symbolsBeforeLength;
+
+		if (length <= HUFFMAN_FAST_BITS) {
+			const suffixBits = HUFFMAN_FAST_BITS - length;
+			const suffixCount = 1 << suffixBits;
+			for (let offset = 0; offset < count; offset++) {
+				const start = (code + offset) << suffixBits;
+				const entry = (length << HUFFMAN_SYMBOL_BITS) | symbols[symbolsBeforeLength + offset]!;
+				fastLookup.fill(entry, start, start + suffixCount);
+			}
+		}
+
 		code = (code + count) * 2;
 		symbolsBeforeLength += count;
 	}
 
 	return {
+		fastLookup,
 		minimumLength,
 		maximumLength,
 		limits,
@@ -116,6 +136,22 @@ const createHuffmanTable = (lengths: Uint8Array, error: ErrorFactory, reader: Bi
 };
 
 const readHuffmanSymbol = (reader: BitReader, table: HuffmanTable, error: ErrorFactory): number => {
+	const start = reader.position;
+	if (start + HUFFMAN_FAST_BITS <= reader.bytes.byteLength * 8) {
+		const byteIndex = start >>> 3;
+		const prefix =
+			(((reader.bytes[byteIndex]! << 16) |
+				(reader.bytes[byteIndex + 1]! << 8) |
+				(reader.bytes[byteIndex + 2] ?? 0)) >>>
+				(24 - (start & 7) - HUFFMAN_FAST_BITS)) &
+			HUFFMAN_FAST_MASK;
+		const entry = table.fastLookup[prefix]!;
+		if (entry !== 0) {
+			reader.position = start + (entry >>> HUFFMAN_SYMBOL_BITS);
+			return entry & HUFFMAN_SYMBOL_MASK;
+		}
+	}
+
 	let length = table.minimumLength;
 	let code = reader.readBits(length);
 
@@ -135,15 +171,22 @@ const readHuffmanSymbol = (reader: BitReader, table: HuffmanTable, error: ErrorF
 	return table.symbols[symbolIndex]!;
 };
 
-const walkDecodedBlock = (
+const validateDecodedBlock = (
 	block: Uint32Array,
 	blockLength: number,
 	originalPointer: number,
 	randomized: boolean,
-	visitRun: (byte: number, count: number) => void
-): void => {
+	maximumOutputLength: number,
+	error: ErrorFactory,
+	reader: BitReader
+): { readonly crc: number; readonly output?: Uint8Array; readonly outputLength: number } => {
 	let randomPosition = 0;
 	let randomCountdown = 0;
+	let outputLength = 0;
+	let output: Uint8Array | undefined = new Uint8Array(
+		Math.min(block.length * MAX_CACHED_BLOCK_EXPANSION, maximumOutputLength)
+	);
+	const crc = new BzipCrc32();
 	const derandomize = (byte: number) => {
 		if (!randomized) return byte;
 		if (randomCountdown === 0) {
@@ -177,21 +220,59 @@ const walkDecodedBlock = (
 			outputByte = current;
 		}
 
-		visitRun(outputByte, copies);
+		if (copies > maximumOutputLength - outputLength) {
+			throw error('OUTPUT_LIMIT_EXCEEDED', 'Decompressed data exceeds maxOutputBytes', reader);
+		}
+		if (output !== undefined) {
+			if (copies <= output.length - outputLength) {
+				if (copies === 1) output[outputLength] = outputByte;
+				else output.fill(outputByte, outputLength, outputLength + copies);
+			} else {
+				output = undefined;
+			}
+		}
+		crc.updateRun(outputByte, copies);
+		outputLength += copies;
 
 		if (current !== previous) runLength = 0;
 	}
+
+	return {
+		crc: crc.value,
+		output: output?.subarray(0, outputLength),
+		outputLength
+	};
 };
 
 const createBlockEmitter = (
 	block: Uint32Array,
 	blockLength: number,
 	originalPointer: number,
-	randomized: boolean
+	randomized: boolean,
+	validatedOutput?: Uint8Array
 ): ((sink: ByteSink, chunkSize: number) => void) => {
+	if (validatedOutput !== undefined) {
+		return (sink, chunkSize) => {
+			for (let offset = 0; offset < validatedOutput.length; offset += chunkSize) {
+				sink(validatedOutput.subarray(offset, Math.min(offset + chunkSize, validatedOutput.length)));
+			}
+		};
+	}
+
 	return (sink, chunkSize) => {
 		let output = new Uint8Array(chunkSize);
 		let outputPosition = 0;
+		let randomPosition = 0;
+		let randomCountdown = 0;
+		const derandomize = (byte: number) => {
+			if (!randomized) return byte;
+			if (randomCountdown === 0) {
+				randomCountdown = RANDOM_NUMBERS[randomPosition]!;
+				randomPosition = (randomPosition + 1) & 511;
+			}
+			randomCountdown--;
+			return randomCountdown === 1 ? byte ^ 1 : byte;
+		};
 
 		const flush = () => {
 			if (outputPosition === 0) return;
@@ -200,16 +281,45 @@ const createBlockEmitter = (
 			outputPosition = 0;
 		};
 
-		walkDecodedBlock(block, blockLength, originalPointer, randomized, (byte, count) => {
-			while (count > 0) {
-				const copyLength = Math.min(count, output.length - outputPosition);
-				output.fill(byte, outputPosition, outputPosition + copyLength);
-				outputPosition += copyLength;
-				count -= copyLength;
+		let packed = block[originalPointer]!;
+		let position = packed >>> 8;
+		let current = derandomize(packed & 0xff);
+		let runLength = -1;
 
-				if (outputPosition === output.length) flush();
+		for (let remaining = blockLength; remaining > 0; remaining--) {
+			const previous = current;
+			packed = block[position]!;
+			current = derandomize(packed & 0xff);
+			position = packed >>> 8;
+
+			let count: number;
+			let outputByte: number;
+
+			if (runLength++ === 3) {
+				count = current;
+				outputByte = previous;
+				current = -1;
+			} else {
+				count = 1;
+				outputByte = current;
 			}
-		});
+
+			if (count === 1) {
+				output[outputPosition++] = outputByte;
+				if (outputPosition === output.length) flush();
+			} else {
+				while (count > 0) {
+					const copyLength = Math.min(count, output.length - outputPosition);
+					output.fill(outputByte, outputPosition, outputPosition + copyLength);
+					outputPosition += copyLength;
+					count -= copyLength;
+
+					if (outputPosition === output.length) flush();
+				}
+			}
+
+			if (current !== previous) runLength = 0;
+		}
 
 		flush();
 	};
@@ -219,6 +329,7 @@ const decodeNextBlock = (
 	reader: BitReader,
 	maximumBlockLength: number,
 	maximumOutputLength: number,
+	block: Uint32Array,
 	error: ErrorFactory
 ): BlockResult => {
 	const [markerHigh, markerLow] = reader.readMarker();
@@ -307,7 +418,6 @@ const decodeNextBlock = (
 	const moveToFrontSymbols = new Uint8Array(256);
 	for (let symbol = 0; symbol < 256; symbol++) moveToFrontSymbols[symbol] = symbol;
 
-	const block = new Uint32Array(maximumBlockLength);
 	let blockLength = 0;
 	let selectorIndex = 0;
 	let symbolsRemainingForSelector = 0;
@@ -380,28 +490,28 @@ const decodeNextBlock = (
 		frequencies[byte] = sortedPosition + 1;
 	}
 
-	const crc = new BzipCrc32();
-	let outputLength = 0;
-	walkDecodedBlock(block, blockLength, originalPointer, randomized, (byte, count) => {
-		if (count > maximumOutputLength - outputLength) {
-			throw error('OUTPUT_LIMIT_EXCEEDED', 'Decompressed data exceeds maxOutputBytes', reader);
-		}
-		crc.updateRun(byte, count);
-		outputLength += count;
-	});
+	const validation = validateDecodedBlock(
+		block,
+		blockLength,
+		originalPointer,
+		randomized,
+		maximumOutputLength,
+		error,
+		reader
+	);
 
-	if (crc.value !== storedCrc) {
+	if (validation.crc !== storedCrc) {
 		throw error('BLOCK_CRC_MISMATCH', 'Decoded block CRC does not match the stored CRC', reader, {
 			expected: storedCrc,
-			actual: crc.value
+			actual: validation.crc
 		});
 	}
 
 	return {
 		kind: 'block',
 		storedCrc,
-		outputLength,
-		emit: createBlockEmitter(block, blockLength, originalPointer, randomized)
+		outputLength: validation.outputLength,
+		emit: createBlockEmitter(block, blockLength, originalPointer, randomized, validation.output)
 	};
 };
 
@@ -411,6 +521,7 @@ export class DecoderEngine {
 	#state: DecoderState = 'header';
 	#member = 0;
 	#block = 0;
+	#blockBuffer = new Uint32Array(0);
 	#maximumBlockLength = 0;
 	#combinedCrc = 0;
 	#outputLength = 0;
@@ -472,6 +583,7 @@ export class DecoderEngine {
 							reader,
 							this.#maximumBlockLength,
 							this.#options.maxOutputBytes - this.#outputLength,
+							this.#blockBuffer,
 							this.#errorFactory()
 						);
 					} catch (error) {
@@ -490,9 +602,13 @@ export class DecoderEngine {
 								'Compressed block exceeds the safe format-derived size bound'
 							);
 						}
+						const retryGrowth =
+							this.#input.byteLength < 64 * 1024
+								? Math.max(1, this.#input.byteLength)
+								: this.#maximumBlockLength;
 						this.#minimumBytesForBlockRetry = Math.min(
 							maximumCompressedBytes,
-							Math.max(this.#input.byteLength + 1, this.#input.byteLength * 2)
+							this.#input.byteLength + retryGrowth
 						);
 						return;
 					}
@@ -607,6 +723,9 @@ export class DecoderEngine {
 		this.#member++;
 		this.#block = 0;
 		this.#maximumBlockLength = blockSize * 100_000;
+		if (this.#blockBuffer.length !== this.#maximumBlockLength) {
+			this.#blockBuffer = new Uint32Array(this.#maximumBlockLength);
+		}
 		this.#combinedCrc = 0;
 		this.#minimumBytesForBlockRetry = 0;
 		this.#state = 'blocks';

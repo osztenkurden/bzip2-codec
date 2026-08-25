@@ -88,6 +88,11 @@ test('handles first-stage run-length boundaries', () => {
 	}
 });
 
+test('round-trips run-length expansion larger than the decoder block cache', () => {
+	const input = new Uint8Array(250_000).fill(0xa5);
+	assert.deepEqual(decompress(compress(input, { blockSize: 1 })), input);
+});
+
 test('validates compression options', () => {
 	const input = new Uint8Array();
 	assert.throws(() => compress(input, { blockSize: 0 as never }), RangeError);

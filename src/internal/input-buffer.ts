@@ -90,34 +90,33 @@ export class BitReader {
 		this.position = bitOffset;
 	}
 
-	get remainingBits(): number {
-		return this.bytes.byteLength * 8 - this.position;
-	}
-
 	readBits(count: number): number {
-		if (!Number.isInteger(count) || count < 0 || count > 32) {
-			throw new RangeError('Bit reads must contain between 0 and 32 bits');
-		}
+		const start = this.position;
+		if (start + count > this.bytes.byteLength * 8) throw NEED_MORE_INPUT;
+		if (count === 0) return 0;
 
-		if (this.remainingBits < count) throw NEED_MORE_INPUT;
-
+		let byteIndex = start >>> 3;
+		const bitOffset = start & 7;
 		let result = 0;
 		let remaining = count;
 
-		while (remaining > 0) {
-			const byteIndex = Math.floor(this.position / 8);
-			const offset = this.position & 7;
-			const available = 8 - offset;
+		if (bitOffset !== 0) {
+			const available = 8 - bitOffset;
 			const take = Math.min(available, remaining);
-			const shift = available - take;
 			const mask = (1 << take) - 1;
-			const part = (this.bytes[byteIndex]! >>> shift) & mask;
-
-			result = result * 2 ** take + part;
-			this.position += take;
+			result = (this.bytes[byteIndex]! >>> (available - take)) & mask;
 			remaining -= take;
+			byteIndex++;
 		}
 
+		while (remaining >= 8) {
+			result = (result << 8) | this.bytes[byteIndex++]!;
+			remaining -= 8;
+		}
+
+		if (remaining > 0) result = (result << remaining) | (this.bytes[byteIndex]! >>> (8 - remaining));
+
+		this.position = start + count;
 		return result >>> 0;
 	}
 
