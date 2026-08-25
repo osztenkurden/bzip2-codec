@@ -1,0 +1,17 @@
+The bzip2 decoder design was informed by seek-bzip:
+
+  Copyright (c) 2013-2015 C. Scott Ananian
+  Copyright (c) 2012-2015 Eli Skeggs
+  Copyright (c) 2011 Kevin Kwok
+
+seek-bzip is distributed under the MIT License.
+
+The CRC implementation is based on the MIT-licensed CRC32 implementation in
+seek-bzip, itself based on work by Matthew Francis.
+
+The encoder is an independent TypeScript implementation of the public bzip2
+format and algorithms described by the bzip2/libbzip2 project.
+
+The legacy randomization sequence is format data published by bzip2/libbzip2:
+
+  Copyright (c) 1996-2010 Julian Seward

@@ -1,0 +1,67 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# local test and benchmark data
+# Git cannot ignore by file size, so large inputs belong in these directories.
+/test_files/*
+!/test_files/README.md
+/benchmark-data/
+
+# raw demos and compressed archives are local by default
+*.dem
+*.bz2
+*.tbz
+*.tbz2
+*.tar
+*.tar.gz
+*.zip
+*.7z
+*.rar
+
+# deliberately curated small fixtures may be committed here
+!/test/fixtures/
+!/test/fixtures/**
+
+# generated memory and CPU profiles
+/profiles/
+*.heapsnapshot
+*.heapprofile
+*.cpuprofile
+core
+core.*
+*.dmp
+
+# generated release files
+CHANGELOG.md
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store

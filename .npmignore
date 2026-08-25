@@ -1,0 +1,11 @@
+.git
+.github
+.prettierignore
+.prettierrc
+coverage
+node_modules
+src
+test
+test_files
+tsconfig.json
+CLAUDE.md
