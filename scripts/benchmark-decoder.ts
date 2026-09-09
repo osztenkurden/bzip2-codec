@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 
 const { createDecompressionStream, decompress }: typeof import('../src/index.ts') = await import(
 	process.env.BZIP_BENCHMARK_MODULE ?? '../src/index.ts'
@@ -22,8 +23,20 @@ const paths = process.argv.slice(2).filter(path => path !== '--');
 if (paths.length > 0) {
 	for (const path of paths) {
 		const compressed = readFileSync(path);
-		const input = native(compressed, ['-dc']);
-		fixtures.push({ name: path, compressed, expected: hash(input), size: input.length });
+		const reference = spawn('bzip2', ['-dc', '--', path], { stdio: ['ignore', 'pipe', 'inherit'] });
+		const digest = createHash('sha256');
+		let size = 0;
+		const [, [status]] = await Promise.all([
+			(async () => {
+				for await (const chunk of reference.stdout) {
+					digest.update(chunk);
+					size += chunk.length;
+				}
+			})(),
+			once(reference, 'close')
+		]);
+		if (status !== 0) throw new Error(`Reference bzip2 exited with status ${status}`);
+		fixtures.push({ name: path, compressed, expected: digest.digest('hex'), size });
 	}
 } else {
 	for (const name of ['text', 'binary', 'random', 'runs']) {

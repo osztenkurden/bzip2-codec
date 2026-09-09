@@ -159,7 +159,7 @@ BZIP_BENCHMARK_RUNS=15 bun run benchmark:decoder -- path/to/file.bz2
 node scripts/benchmark-decoder.ts
 ```
 
-This benchmark requires system `bzip2` to generate independent fixtures or verify supplied files. It measures the synchronous API and streaming with 64 KiB input chunks separately, verifies every output, and reports median MiB/s per fixture. See [BENCHMARKS.md](BENCHMARKS.md) for methodology and optimization results.
+This benchmark requires system `bzip2` to generate independent fixtures or verify supplied files. It measures the synchronous API and streaming with 64 KiB input chunks separately, verifies every output, and reports median MiB/s per fixture. Timed measurements retain decoded output, so sufficient memory for the uncompressed fixture is required. To compare another checkout, set `BZIP_BENCHMARK_MODULE` to its absolute `file:///.../src/index.ts` URL.
 
 ## License
 
