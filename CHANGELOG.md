@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.1.0...v1.1.1) (2026-09-09)
+
+
+### Performance Improvements
+
+* optimize decompression MTF and CRC processing ([#4](https://github.com/osztenkurden/bzip2-codec/issues/4)) ([88357d1](https://github.com/osztenkurden/bzip2-codec/commit/88357d15bd6e1f23b3eb3df240b24d921aa7f91d))
+
 ## [1.1.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.0.1...v1.1.0) (2026-08-25)
 
 
