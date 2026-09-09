@@ -61,8 +61,13 @@ const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setTimeout(
 const moveToFront = (values: Uint8Array, index: number): number => {
 	const value = values[index]!;
 
-	for (let position = index; position > 0; position--) {
-		values[position] = values[position - 1]!;
+	if (index > 16) {
+		// Native memmove is cheaper than a byte-wise shift for distant symbols.
+		values.copyWithin(1, 0, index);
+	} else {
+		for (let position = index; position > 0; position--) {
+			values[position] = values[position - 1]!;
+		}
 	}
 
 	values[0] = value;
@@ -230,15 +235,17 @@ const validateDecodedBlock = (
 				if (copies === 1) output[outputLength] = outputByte;
 				else output.fill(outputByte, outputLength, outputLength + copies);
 			} else {
+				crc.updateBytes(output.subarray(0, outputLength));
 				output = undefined;
 			}
 		}
-		crc.updateRun(outputByte, copies);
+		if (output === undefined) crc.updateRun(outputByte, copies);
 		outputLength += copies;
 
 		if (current !== previous) runLength = 0;
 	}
 
+	if (output !== undefined) crc.updateBytes(output.subarray(0, outputLength));
 	return {
 		crc: crc.value,
 		output: output?.subarray(0, outputLength),

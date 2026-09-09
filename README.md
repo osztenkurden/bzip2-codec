@@ -151,6 +151,16 @@ bun run memory:decompress -- path/to/another-file.bz2
 
 Each method runs in a fresh Bun process. The report verifies that every method produced the same byte count and SHA-256 digest, then obtains lifetime peak RSS from Bun's documented [`subprocess.resourceUsage()` API](https://bun.com/docs/runtime/child-process#resource-usage).
 
+For warmed decompression throughput, with input generation and SHA-256 verification outside the timed region:
+
+```sh
+bun run benchmark:decoder
+BZIP_BENCHMARK_RUNS=15 bun run benchmark:decoder -- path/to/file.bz2
+node scripts/benchmark-decoder.ts
+```
+
+This benchmark requires system `bzip2` to generate independent fixtures or verify supplied files. It measures the synchronous API and streaming with 64 KiB input chunks separately, verifies every output, and reports median MiB/s per fixture. Timed measurements retain decoded output, so sufficient memory for the uncompressed fixture is required. To compare another checkout, set `BZIP_BENCHMARK_MODULE` to its absolute `file:///.../src/index.ts` URL.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE) for the full terms and [NOTICE](NOTICE) for third-party attributions.

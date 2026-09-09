@@ -24,6 +24,7 @@
 		"memory:decompress": "bun scripts/memory-report.ts",
 		"typecheck": "tsc",
 		"benchmark:decompress": "bun scripts/benchmark-decompression.ts",
+		"benchmark:decoder": "bun scripts/benchmark-decoder.ts",
 		"build": "tsdown src/index.ts",
 		"pack:check": "npm pack --dry-run",
 		"format": "prettier --write .",
