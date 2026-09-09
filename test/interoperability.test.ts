@@ -52,6 +52,21 @@ test(
 				assert.deepEqual(new Uint8Array(await runBzip2(['-dc'], compress(input, { blockSize: 1 }))), input);
 				assert.deepEqual(decompress(await runBzip2(['-c', '-1'], input)), input);
 			}
+
+			// Sparse alphabets around MTF indices 16/17, plus a wider alphabet.
+			// The full 256-byte random alphabet is already covered above.
+			for (const alphabetSize of [16, 17, 18, 64]) {
+				const input = new Uint8Array(8_192);
+				for (let index = 0; index < input.length; index++) {
+					const symbol = index < alphabetSize ? index : pseudorandom[index]! % alphabetSize;
+					input[index] = (symbol * 73 + 0x80) & 0xff;
+				}
+				assert.deepEqual(
+					decompress(await runBzip2(['-c', '-1'], input)),
+					input,
+					`system-compressed alphabet size ${alphabetSize}`
+				);
+			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
 				context.skip('bzip2 executable is unavailable');

@@ -94,13 +94,9 @@ test('reports a block checksum mismatch without emitting corrupt output', async 
 	corrupt[10] = corrupt[10]! ^ 1;
 	const stream = createDecompressionStream({ yieldAfterMs: 0 });
 	const writer = stream.writable.getWriter();
-	const outputPromise = collectStream(stream.readable);
-
-	await assert.rejects(
-		writer.write(corrupt),
-		(error: unknown) => error instanceof BzipError && error.code === 'BLOCK_CRC_MISMATCH'
-	);
-	await assert.rejects(outputPromise, (error: unknown) => error instanceof BzipError);
+	const reader = stream.readable.getReader();
+	const isCrcError = (error: unknown) => error instanceof BzipError && error.code === 'BLOCK_CRC_MISMATCH';
+	await Promise.all([assert.rejects(reader.read(), isCrcError), assert.rejects(writer.write(corrupt), isCrcError)]);
 });
 
 test('rejects truncated input only when final input is declared', () => {
@@ -196,6 +192,49 @@ test('enforces the output limit before emitting an oversized block', async () =>
 	);
 	await assert.rejects(outputPromise, (error: unknown) => error instanceof BzipError);
 });
+
+// Block size 1 caches up to 200,000 expanded bytes. These mixed runs fit in one
+// encoded block and exercise both crossing the cache in a run and continuing after it.
+for (const length of [199_999, 200_000, 200_001, 200_517]) {
+	test(`validates cached/fallback output of ${length} bytes before emission`, async () => {
+		const input = Uint8Array.from({ length }, (_, index) => (Math.floor(index / 251) * 73) & 0xff);
+		const encoded = compress(input, { blockSize: 1 });
+		assert.deepEqual(decompress(encoded), input);
+		assert.throws(
+			() => decompress(encoded, { maxOutputBytes: length - 1 }),
+			(error: unknown) => error instanceof BzipError && error.code === 'OUTPUT_LIMIT_EXCEEDED'
+		);
+
+		for (const yieldAfterMs of [undefined, 0]) {
+			const stream = createDecompressionStream({ maxOutputBytes: length, outputChunkSize: 997, yieldAfterMs });
+			const writer = stream.writable.getWriter();
+			const outputPromise = collectStream(stream.readable);
+			await writer.write(encoded);
+			await writer.close();
+			assert.deepEqual(await outputPromise, input);
+
+			const corrupt = Uint8Array.from(encoded);
+			corrupt[10] = corrupt[10]! ^ 1;
+			for (const code of ['BLOCK_CRC_MISMATCH', 'OUTPUT_LIMIT_EXCEEDED'] as const) {
+				const failingStream = createDecompressionStream({
+					maxOutputBytes: code === 'OUTPUT_LIMIT_EXCEEDED' ? length - 1 : length,
+					outputChunkSize: 997,
+					yieldAfterMs
+				});
+				const failingWriter = failingStream.writable.getWriter();
+				const reader = failingStream.readable.getReader();
+				const isExpectedError = (error: unknown) => error instanceof BzipError && error.code === code;
+				await Promise.all([
+					assert.rejects(reader.read(), isExpectedError),
+					assert.rejects(
+						failingWriter.write(code === 'BLOCK_CRC_MISMATCH' ? corrupt : encoded),
+						isExpectedError
+					)
+				]);
+			}
+		}
+	});
+}
 
 test('validates decompression options', () => {
 	assert.throws(() => decompress(SAMPLE, { maxOutputBytes: -1 }), RangeError);
