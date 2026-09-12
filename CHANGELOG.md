@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.2.0...v1.2.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* move worker to blob url ([86fba3d](https://github.com/osztenkurden/bzip2-codec/commit/86fba3d2ac8b81341ae3e20070914f474b67ee53))
+
 ## [1.2.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.1.1...v1.2.0) (2026-09-12)
 
 
