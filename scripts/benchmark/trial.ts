@@ -1,107 +1,57 @@
 import { usage } from './usage.ts';
-import { fetchIPv4 } from './fetch-ipv4.ts';
 
-// URL arrives through stdin so it is absent from process arguments and saved metadata.
+// Load the shared archive before timing each decoder.
 const config = JSON.parse(await Bun.stdin.text()) as {
-	url: string;
+	inputPath: string;
 	bundle: string;
 	mode: string;
 	concurrency: number | 'auto';
 	timeoutMs: number;
 };
 const codec = config.mode === 'js' ? await import(config.bundle) : undefined;
+const bytes = new Uint8Array(await Bun.file(config.inputPath).arrayBuffer());
+const inputSha256 = new Bun.CryptoHasher('sha256').update(bytes).digest('hex');
 const controller = new AbortController();
 let timedOut = false;
-let downloadError: unknown;
 const timeout = setTimeout(() => {
 	timedOut = true;
 	controller.abort(new Error('Trial timed out'));
 }, config.timeoutMs);
-const hash = new Bun.CryptoHasher('sha256');
-const inputHash = new Bun.CryptoHasher('sha256');
-let inputBytes = 0,
-	outputBytes = 0,
-	inputChunks = 0;
-let firstInputMs: number | undefined, inputEndMs: number | undefined, firstOutputMs: number | undefined;
-let inputHashMs = 0,
-	outputHashMs = 0;
+const chunks: Uint8Array[] = [];
+let outputBytes = 0;
+let offset = 0;
 let native: ReturnType<typeof Bun.spawn> | undefined;
 const cpuStart = process.cpuUsage();
 const started = performance.now();
 try {
-	const response = await fetchIPv4(config.url, controller.signal).catch(error => {
-		if (!controller.signal.aborted) downloadError = error;
-		throw error;
-	});
-	const headersMs = performance.now() - started;
-	if (!response.ok || !response.body) {
-		await response.body?.cancel();
-		throw new Error(`HTTP ${response.status}; redirects are intentionally not followed`);
-	}
-	const encoding = response.headers.get('content-encoding');
-	if (encoding && encoding !== 'identity') {
-		await response.body.cancel();
-		throw new Error('Server ignored Accept-Encoding: identity');
-	}
-	const expectedLength = response.headers.get('content-length');
-	const reader = response.body.getReader();
 	const input = new ReadableStream<Uint8Array>({
-		async pull(sink) {
-			let item: Awaited<ReturnType<typeof reader.read>>;
-			try {
-				item = await reader.read();
-			} catch (error) {
-				if (!controller.signal.aborted) downloadError = error;
-				throw error;
-			}
-			if (item.done) {
-				inputEndMs = performance.now() - started;
-				if (expectedLength !== null && Number(expectedLength) !== inputBytes) {
-					const error = new Error('Content-Length mismatch');
-					if (inputBytes < Number(expectedLength)) downloadError = error;
-					throw error;
-				}
-				sink.close();
-				return;
-			}
-			const chunk = item.value;
-			firstInputMs ??= performance.now() - started;
-			inputBytes += chunk.length;
-			inputChunks++;
-			const before = performance.now();
-			inputHash.update(chunk);
-			inputHashMs += performance.now() - before;
-			sink.enqueue(chunk);
-		},
-		cancel(reason) {
-			return reader.cancel(reason);
+		pull(sink) {
+			if (offset === bytes.length) return sink.close();
+			const end = Math.min(offset + 65536, bytes.length);
+			sink.enqueue(bytes.subarray(offset, end));
+			offset = end;
 		}
 	});
 	const consume = async (stream: ReadableStream<Uint8Array>) => {
 		await stream.pipeTo(
 			new WritableStream<Uint8Array>({
 				write(chunk) {
-					firstOutputMs ??= performance.now() - started;
 					outputBytes += chunk.length;
-					const before = performance.now();
-					hash.update(chunk);
-					outputHashMs += performance.now() - before;
+					chunks.push(chunk);
 				}
 			}),
 			{ signal: controller.signal }
 		);
 	};
 	let nativeUsage: unknown;
-	if (config.mode === 'download') {
-		await input.pipeTo(new WritableStream({ write() {} }), { signal: controller.signal });
-	} else if (config.mode === 'js') {
+	if (config.mode === 'js') {
 		await consume(
-			input.pipeThrough(codec!.createDecompressionStream({ concurrency: config.concurrency, yieldAfterMs: 32 }), {
+			input.pipeThrough(codec!.createDecompressionStream({ concurrency: config.concurrency }), {
 				signal: controller.signal
 			})
 		);
 	} else {
-		// Native decoder receives the same live response, through stdin, with backpressure.
+		// Feed the same preloaded bytes to native stdin with backpressure.
 		const child = Bun.spawn(
 			config.mode === 'lbzip2'
 				? [
@@ -157,39 +107,28 @@ try {
 	}
 	const durationMs = performance.now() - started;
 	const cpu = process.cpuUsage(cpuStart);
+	// Validate outside the timed region, using retained output from this trial.
+	const hash = new Bun.CryptoHasher('sha256');
+	for (const chunk of chunks) hash.update(chunk);
 	console.log(
 		JSON.stringify({
 			durationMs,
-			headersMs,
-			firstInputMs,
-			inputEndMs,
-			firstOutputMs,
-			tailAfterInputMs: inputEndMs === undefined ? undefined : durationMs - inputEndMs,
-			inputBytes,
-			inputChunks,
-			inputSha256: inputHash.digest('hex'),
+			inputBytes: bytes.length,
+			inputSha256,
 			outputBytes,
-			sha256: config.mode === 'download' ? undefined : hash.digest('hex'),
-			inputHashMs,
-			outputHashMs,
+			sha256: hash.digest('hex'),
 			processCpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 },
 			nativeUsage
 		})
 	);
 } catch (error) {
-	const cause = downloadError ?? error;
-	// Avoid printing signed URLs in fetch errors or stack traces.
 	console.error(
 		JSON.stringify({
-			retryable: downloadError !== undefined && !timedOut,
-			phase: timedOut ? 'timeout' : downloadError !== undefined ? 'download' : 'decoder-or-http',
-			inputBytes,
+			phase: timedOut ? 'timeout' : 'decoder',
+			inputBytes: bytes.length,
 			outputBytes,
 			durationMs: performance.now() - started,
-			error:
-				cause instanceof Error
-					? cause.message.replaceAll(config.url, '<url>').replace(/https?:\/\/\S+/g, '<url>')
-					: 'Trial failed'
+			error: error instanceof Error ? error.message : 'Trial failed'
 		})
 	);
 	process.exitCode = 1;

@@ -1,7 +1,8 @@
 import { format } from 'prettier';
-import { cpus, platform, arch } from 'node:os';
-import { rename, rm } from 'node:fs/promises';
+import { cpus, platform, arch, tmpdir } from 'node:os';
+import { mkdtemp, rename, rm } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
+import { fetchIPv4 } from './scripts/benchmark/fetch-ipv4.ts';
 import { median, REPORT_INTRO, updateCpuSection } from './scripts/benchmark/report.ts';
 
 const repository = import.meta.dirname;
@@ -42,37 +43,54 @@ const cases: Case[] = [
 ];
 
 console.log(`CPU: ${cpu}; auto concurrency: ${workers}; ${rounds} rounds.`);
-console.log(
-	`${cases.filter(c => c.available).length * rounds} complete downloads planned, plus up to two retries per interrupted download.`
-);
 // Always measure a fresh production build, never stale dist/ or experimental source patches.
 await command([process.execPath, 'run', 'build']);
 const revision = await command(['git', 'rev-parse', 'HEAD']);
 const dirty = Boolean(await command(['git', 'status', '--porcelain']));
-const results = new Map<string, Result[]>();
-const attempts: object[] = [];
-let reference: Result | undefined;
-const rawPath = `${reportPath}.json`;
-const metadata = {
-	cpu,
-	logicalCpus: cpus().length,
-	autoConcurrency: workers,
-	runtime: Bun.version,
-	platform: platform(),
-	arch: arch(),
-	revision,
-	dirty,
-	host: new URL(url).hostname,
-	rounds,
-	cases: cases.map(c => ({ name: c.name, available: c.available }))
-};
-const saveRaw = (complete: boolean) =>
-	Bun.write(rawPath, JSON.stringify({ ...metadata, complete, attempts }, null, '\t') + '\n');
-await saveRaw(false);
+const scratch = await mkdtemp(join(tmpdir(), 'bzip-benchmark-'));
+try {
+	const inputPath = join(scratch, 'archive.bz2');
+	console.log('Downloading archive once (excluded from timings)...');
+	const response = await fetchIPv4(url, AbortSignal.timeout(timeoutMs));
+	if (!response.ok || !response.body) {
+		await response.body?.cancel();
+		throw new Error(`HTTP ${response.status}; redirects are not followed`);
+	}
+	const encoding = response.headers.get('content-encoding');
+	if (encoding && encoding !== 'identity') {
+		await response.body.cancel();
+		throw new Error('Server ignored Accept-Encoding: identity');
+	}
+	const inputBytes = await Bun.write(inputPath, response);
+	const expectedLength = response.headers.get('content-length');
+	if (expectedLength !== null && Number(expectedLength) !== inputBytes) throw new Error('Content-Length mismatch');
+	console.log(
+		`Downloaded ${(inputBytes / 1e6).toFixed(1)} MB; running ${cases.filter(c => c.available).length * rounds} decoder trials.`
+	);
+	const results = new Map<string, Result[]>();
+	const attempts: object[] = [];
+	let reference: Result | undefined;
+	const rawPath = `${reportPath}.json`;
+	const metadata = {
+		measurement: 'preloaded-input-v1',
+		cpu,
+		logicalCpus: cpus().length,
+		autoConcurrency: workers,
+		runtime: Bun.version,
+		platform: platform(),
+		arch: arch(),
+		revision,
+		dirty,
+		host: new URL(url).hostname,
+		rounds,
+		cases: cases.map(c => ({ name: c.name, available: c.available }))
+	};
+	const saveRaw = (complete: boolean) =>
+		Bun.write(rawPath, JSON.stringify({ ...metadata, complete, attempts }, null, '\t') + '\n');
+	await saveRaw(false);
 
-const runTrial = async (c: Case, round: number): Promise<Result> => {
-	for (let attempt = 1; attempt <= 3; attempt++) {
-		console.log(`${c.name}: round ${round}/${rounds}, attempt ${attempt}`);
+	const runTrial = async (c: Case, round: number): Promise<Result> => {
+		console.log(`${c.name}: round ${round}/${rounds}`);
 		const child = Bun.spawn([process.execPath, join(repository, 'scripts/benchmark/trial.ts')], {
 			stdin: 'pipe',
 			stdout: 'pipe',
@@ -80,7 +98,7 @@ const runTrial = async (c: Case, round: number): Promise<Result> => {
 		});
 		child.stdin.write(
 			JSON.stringify({
-				url,
+				inputPath,
 				bundle: join(repository, `dist/${c.entry}.mjs`),
 				mode: c.mode,
 				concurrency: c.concurrency,
@@ -100,17 +118,12 @@ const runTrial = async (c: Case, round: number): Promise<Result> => {
 			clearTimeout(watchdog);
 		}
 		if (code !== 0) {
-			let failure: { retryable?: boolean; error?: string } = {};
+			let failure: { error?: string } = {};
 			try {
 				failure = JSON.parse(stderr);
 			} catch {}
-			attempts.push({ name: c.name, round, attempt, failed: true, exitCode: code, stderr });
+			attempts.push({ name: c.name, round, failed: true, exitCode: code, stderr });
 			await saveRaw(false);
-			if (failure.retryable && attempt < 3) {
-				console.warn('Download interrupted; retrying from the beginning.');
-				await Bun.sleep(1000 * attempt);
-				continue;
-			}
 			throw new Error(
 				`${c.name}: ${failure.error ?? 'trial failed'}. Existing Markdown was not changed. Details: ${rawPath}`
 			);
@@ -122,34 +135,34 @@ const runTrial = async (c: Case, round: number): Promise<Result> => {
 				result.inputBytes === reference.inputBytes &&
 				result.sha256 === reference.sha256 &&
 				result.outputBytes === reference.outputBytes);
-		attempts.push({ name: c.name, round, attempt, valid, ...result });
+		attempts.push({ name: c.name, round, valid, ...result });
 		await saveRaw(false);
 		if (!valid) throw new Error('Input changed or decoder outputs differ; existing Markdown was not changed');
 		reference ??= result;
 		console.log(`  ${(result.durationMs / 1000).toFixed(3)} s`);
 		return result;
+	};
+	const available = cases.filter(c => c.available);
+	for (let round = 1; round <= rounds; round++) {
+		const shift = (round - 1) % available.length;
+		const order = [...available.slice(shift), ...available.slice(0, shift)];
+		for (const c of round % 2 ? order : order.reverse()) {
+			const result = await runTrial(c, round);
+			const rows = results.get(c.name) ?? [];
+			rows.push(result);
+			results.set(c.name, rows);
+		}
 	}
-	throw new Error('Retry budget exhausted');
-};
-const available = cases.filter(c => c.available);
-for (let round = 1; round <= rounds; round++) {
-	const shift = (round - 1) % available.length;
-	const order = [...available.slice(shift), ...available.slice(0, shift)];
-	for (const c of round % 2 ? order : order.reverse()) {
-		const result = await runTrial(c, round);
-		const rows = results.get(c.name) ?? [];
-		rows.push(result);
-		results.set(c.name, rows);
-	}
-}
-const table = cases.map(c => {
-	const rows = results.get(c.name);
-	if (!rows) return `| ${c.name} | Not installed | — | — |`;
-	const times = rows.map(r => r.durationMs);
-	const middle = median(times);
-	return `| ${c.name} | ${(middle / 1000).toFixed(3)} s | ${(reference!.outputBytes / middle / 1000).toFixed(2)} MB/s | ${(Math.min(...times) / 1000).toFixed(3)}–${(Math.max(...times) / 1000).toFixed(3)} s |`;
-});
-const section = `## ${cpu}
+	const table = cases.map(c => {
+		const rows = results.get(c.name);
+		if (!rows) return `| ${c.name} | Not installed | — | — |`;
+		const times = rows.map(r => r.durationMs);
+		const middle = median(times);
+		return `| ${c.name} | ${(middle / 1000).toFixed(3)} s | ${(reference!.outputBytes / middle / 1000).toFixed(2)} MB/s | ${(Math.min(...times) / 1000).toFixed(3)}–${(Math.max(...times) / 1000).toFixed(3)} s |`;
+	});
+	const section = `## ${cpu}
+
+Measurement: preloaded input, download/file reads and SHA-256 validation excluded. Includes decoder startup, streaming and output buffering.
 
 Updated: ${new Date().toISOString()}. ${platform()} ${arch()}, Bun ${Bun.version}; ${workers} auto workers/threads, bzip2 single-threaded.
 Revision: \`${revision.slice(0, 12)}\`${dirty ? ' (working tree has changes)' : ''}. ${rounds} successful trial(s) per decoder. Source host: \`${new URL(url).hostname}\`.
@@ -160,20 +173,23 @@ Input SHA-256: \`${reference!.inputSha256}\`. Output SHA-256: \`${reference!.sha
 | --- | ---: | ---: | ---: |
 ${table.join('\n')}
 `;
-const old = (await Bun.file(reportPath).exists()) ? await Bun.file(reportPath).text() : REPORT_INTRO;
-const temporary = join(dirname(reportPath), `.benchmark-${process.pid}-${Date.now()}.tmp`);
-try {
-	await Bun.write(
-		temporary,
-		updateCpuSection(
-			old,
-			cpu,
-			await format(section, { parser: 'markdown', printWidth: 120, tabWidth: 4, useTabs: true })
-		)
-	);
-	await rename(temporary, reportPath);
+	const old = (await Bun.file(reportPath).exists()) ? await Bun.file(reportPath).text() : REPORT_INTRO;
+	const temporary = join(dirname(reportPath), `.benchmark-${process.pid}-${Date.now()}.tmp`);
+	try {
+		await Bun.write(
+			temporary,
+			updateCpuSection(
+				old,
+				cpu,
+				await format(section, { parser: 'markdown', printWidth: 120, tabWidth: 4, useTabs: true })
+			)
+		);
+		await rename(temporary, reportPath);
+	} finally {
+		await rm(temporary, { force: true });
+	}
+	await saveRaw(true);
+	console.log(`Updated ${reportPath}; raw trials saved to ${rawPath}`);
 } finally {
-	await rm(temporary, { force: true });
+	await rm(scratch, { recursive: true, force: true });
 }
-await saveRaw(true);
-console.log(`Updated ${reportPath}; raw trials saved to ${rawPath}`);

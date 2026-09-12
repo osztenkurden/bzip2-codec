@@ -1,8 +1,9 @@
 export const REPORT_INTRO = `# Decompression benchmarks
 
 Run \`bun benchmark.ts '<archive-url>'\` to add or update this machine's CPU section.
-Each result measures a fresh IPv4 HTTP fetch → decoder → SHA-256 sink, with no output file.
-Times include networking and hashing; compare machines only with comparable input and network conditions.
+The archive is downloaded once over IPv4 and loaded into memory before each trial.
+Times include decoding, startup and output buffering; download, file reads and hash validation are excluded.
+Compare sections using the same input and measurement method.
 `;
 
 /** Replace this CPU's section in place, retaining other CPUs and their order. */

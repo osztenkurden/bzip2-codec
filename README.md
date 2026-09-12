@@ -177,11 +177,11 @@ bun benchmark.ts 'https://host/demo.bz2'  # another URL
 bun benchmark.ts 'https://host/demo.bz2' 5
 ```
 
-Compares bzip2, lbzip2, JS auto concurrency and WASM auto concurrency using an IPv4 fetch → decoder → SHA-256 pipeline. Install `bzip2` and `lbzip2` to include their results.
+Compares bzip2, lbzip2, JS auto concurrency and WASM auto concurrency using the same preloaded archive. The archive is downloaded once over IPv4. Install `bzip2` and `lbzip2` to include their results.
 
 [benchmark.md](benchmark.md) is grouped by CPU model. Rerunning updates that CPU's section; a new CPU is appended. Raw trials go to `benchmark.md.json`. Decoder failures or mismatched hashes leave the Markdown unchanged.
 
-The default runs three rounds of a 220 MB archive: about 2.6 GB downloaded. Times include networking, startup and hashing.
+The default downloads a 220 MB archive once and runs three rounds. File reads and SHA-256 validation happen outside the timed region. Timings include decoder startup, streaming and output buffering. Each trial needs memory for the compressed input and decompressed output.
 
 | Environment variable        | Default             |
 | --------------------------- | ------------------- |
