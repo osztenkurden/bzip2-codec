@@ -1,4 +1,5 @@
 import { DecoderEngine } from './codec/decoder.ts';
+import { ParallelDecoderEngine } from './parallel/engine.ts';
 import { concatChunks } from './internal/chunks.ts';
 import { resolveDecompressionStreamOptions, resolveDecompressOptions } from './options.ts';
 import type { DecompressionStreamOptions, DecompressOptions } from './types.ts';
@@ -22,7 +23,30 @@ export const decompress = (input: Uint8Array, options?: DecompressOptions): Uint
 export const createDecompressionStream = (
 	options?: DecompressionStreamOptions
 ): TransformStream<Uint8Array, Uint8Array> => {
-	const { yieldAfterMs, ...decoderOptions } = resolveDecompressionStreamOptions(options);
+	const { yieldAfterMs, concurrency, ...decoderOptions } = resolveDecompressionStreamOptions(options);
+
+	if (concurrency > 1) {
+		let engine!: ParallelDecoderEngine;
+		// `cancel` is a newer Transformer hook; the lib typings predate it.
+		const transformer: Transformer<Uint8Array, Uint8Array> & { cancel(): void } = {
+			start(controller) {
+				engine = new ParallelDecoderEngine(decoderOptions, concurrency, output => controller.enqueue(output), {
+					onError: error => controller.error(error)
+				});
+			},
+			transform(chunk) {
+				return engine.push(chunk);
+			},
+			flush() {
+				return engine.finish();
+			},
+			cancel() {
+				engine.close();
+			}
+		};
+		return new TransformStream<Uint8Array, Uint8Array>(transformer);
+	}
+
 	const decoder = new DecoderEngine(decoderOptions);
 
 	if (yieldAfterMs !== undefined) {

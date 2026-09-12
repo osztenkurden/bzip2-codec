@@ -32,6 +32,8 @@ interface DecodedBlock {
 	readonly kind: 'block';
 	readonly storedCrc: number;
 	readonly outputLength: number;
+	/** Present when the whole block output fit in the bounded cache. */
+	readonly validatedOutput: Uint8Array | undefined;
 	emit(sink: ByteSink, chunkSize: number): void;
 }
 
@@ -520,8 +522,51 @@ const decodeNextBlock = (
 		kind: 'block',
 		storedCrc,
 		outputLength: validation.outputLength,
+		validatedOutput: validation.output,
 		emit: createBlockEmitter(block, blockLength, originalPointer, randomized, validation.output)
 	};
+};
+
+export interface StandaloneBlock {
+	readonly storedCrc: number;
+	/** Exact-length view; its underlying buffer is freshly allocated and may be transferred. */
+	readonly output: Uint8Array;
+	/** Bit position immediately after the block, relative to `bytes`. */
+	readonly endPosition: number;
+}
+
+/**
+ * Decodes one complete bzip2 block whose 48-bit marker begins at `bitOffset` within `bytes`.
+ * Used by worker threads that decode blocks independently of the surrounding stream.
+ */
+export const decodeStandaloneBlock = (
+	bytes: Uint8Array,
+	bitOffset: number,
+	maximumBlockLength: number,
+	maximumOutputLength: number,
+	workspace: Uint32Array,
+	error: ErrorFactory
+): StandaloneBlock => {
+	const reader = new BitReader(bytes, bitOffset);
+	const result = decodeNextBlock(reader, maximumBlockLength, maximumOutputLength, workspace, error);
+
+	if (result.kind !== 'block') {
+		throw error('INVALID_BLOCK_HEADER', 'Expected a bzip2 block marker', reader);
+	}
+
+	let output: Uint8Array;
+	if (result.validatedOutput !== undefined) {
+		output = result.validatedOutput;
+	} else {
+		output = new Uint8Array(result.outputLength);
+		let offset = 0;
+		result.emit(chunk => {
+			output.set(chunk, offset);
+			offset += chunk.byteLength;
+		}, 1 << 20);
+	}
+
+	return { storedCrc: result.storedCrc, output, endPosition: reader.position };
 };
 
 export class DecoderEngine {

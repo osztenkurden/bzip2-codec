@@ -91,6 +91,8 @@ interface DecompressOptions {
 interface DecompressionStreamOptions extends DecompressOptions {
 	/** Yield between decoded blocks after this much work. Disabled by default. */
 	yieldAfterMs?: number;
+	/** Decode blocks on this many worker threads. Default: 1 (no workers). */
+	concurrency?: number | 'auto';
 }
 ```
 
@@ -103,6 +105,22 @@ await source.pipeThrough(createDecompressionStream({ yieldAfterMs: 8 })).pipeTo(
 ```
 
 When the elapsed decoding time reaches the configured budget, the transformer yields to the event loop after the current checksum-validated bzip2 block. An individual block remains an atomic unit, so the interval is a responsiveness target rather than a hard deadline. Omitting `yieldAfterMs` retains the synchronous, maximum-throughput path without scheduling timers.
+
+#### Parallel decompression
+
+Every bzip2 block is compressed independently, so a stream can be decoded the way `lbzip2` and `pbzip2` do it: split the input at block boundaries and decode the blocks on several threads at once. Set `concurrency` to enable this:
+
+```ts
+await source.pipeThrough(createDecompressionStream({ concurrency: 'auto' })).pipeTo(destination);
+```
+
+`'auto'` uses the runtime's reported hardware concurrency; a number sets the maximum worker count. Workers are created lazily on the first block, so small inputs pay for only as many threads as they have blocks. Output is emitted in stream order and every block is still checksum-validated before it is emitted, so the observable behaviour matches the single-threaded path, including error codes. `yieldAfterMs` is not needed when workers decode the blocks; the calling thread only scans for block boundaries and forwards output.
+
+The main thread locates blocks by scanning for the 48-bit block marker at every bit offset. The same bit pattern can in principle occur inside compressed data; the decoder handles this by extending any segment that fails to decode over the following segment and retrying, so a spurious marker costs a retry rather than a wrong result.
+
+Parallel decoding uses the standard Web Worker API, so it works in browsers, Bun, and Deno, and bundlers that understand `new Worker(new URL(..., import.meta.url))` pick the worker module up automatically. Node.js does not expose a global `Worker` (for now!), so it always decodes on the calling thread: `concurrency: 'auto'` resolves to 1 there, and an explicit count above 1 throws a `TypeError`. Expect memory use to grow with the worker count: each worker holds its own block workspace, and the main thread buffers up to two decoded blocks per worker while it waits to emit them in order. See [BENCHMARK.md](BENCHMARK.md) for a reproducible throughput and memory comparison.
+
+Workers materialize the entire expanded output of each block before transferring it to the calling thread, including blocks that exceed the sequential decoder's bounded output cache. Highly repetitive input can therefore use much more memory than its compressed size or declared block size suggests. `outputChunkSize` limits emitted chunk sizes, not worker allocations. Use `maxOutputBytes` to limit expansion and choose a lower concurrency when memory is constrained. The worker queue limit does not include chunks already enqueued in the readable stream.
 
 ### `compress(input, options?)`
 
@@ -136,9 +154,15 @@ try {
 bun install
 bun run typecheck
 npm test
+npm run test:parallel
 npm run test:interop
 bun run build
+bun run test:package
 ```
+
+`npm test` runs under Node.js, which has no Web Worker API, so the parallel decoder tests skip there; `npm run test:parallel` runs them under Bun.
+
+`bun run test:parallel:large` exercises more than 512 MiB of generated compressed input without loading the whole stream into memory. CI runs this boundary regression and the built-package worker test.
 
 `npm run test:large` additionally streams a local large fixture into a hash sink without collecting its output. Large fixtures in `test_files/` are deliberately excluded from Git and npm packages.
 
@@ -148,6 +172,8 @@ To compare total peak resident memory for the in-memory API, a native `Bun.file(
 bun run memory:decompress
 bun run memory:decompress -- path/to/another-file.bz2
 ```
+
+Set `BZIP_CONCURRENCY=auto` (or a worker count) to run the stream-based memory reports and `bun run benchmark:decompress` with the parallel decoder.
 
 Each method runs in a fresh Bun process. The report verifies that every method produced the same byte count and SHA-256 digest, then obtains lifetime peak RSS from Bun's documented [`subprocess.resourceUsage()` API](https://bun.com/docs/runtime/child-process#resource-usage).
 

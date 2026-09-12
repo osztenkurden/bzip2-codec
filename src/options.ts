@@ -1,4 +1,5 @@
 import { DEFAULT_OUTPUT_CHUNK_SIZE } from './format/constants.ts';
+import { resolveHardwareConcurrency, supportsWorkers } from './parallel/pool.ts';
 import type {
 	BlockSize,
 	CompressOptions,
@@ -68,5 +69,19 @@ export const resolveDecompressionStreamOptions = (
 		throw new RangeError('yieldAfterMs must be a non-negative finite number');
 	}
 
-	return { ...resolved, yieldAfterMs };
+	let concurrency = 1;
+	if (options.concurrency === 'auto') {
+		// 'auto' means "whatever this runtime offers", so it degrades to the calling thread.
+		concurrency = supportsWorkers() ? resolveHardwareConcurrency() : 1;
+	} else if (options.concurrency !== undefined) {
+		if (!Number.isSafeInteger(options.concurrency) || options.concurrency < 1) {
+			throw new RangeError("concurrency must be a positive safe integer or 'auto'");
+		}
+		if (options.concurrency > 1 && !supportsWorkers()) {
+			throw new TypeError('concurrency > 1 requires the Web Worker API, which this runtime does not provide');
+		}
+		concurrency = options.concurrency;
+	}
+
+	return { ...resolved, yieldAfterMs, concurrency };
 };

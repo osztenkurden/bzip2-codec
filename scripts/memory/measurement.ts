@@ -18,6 +18,17 @@ export const getFixture = async (): Promise<{ path: string; file: Bun.BunFile }>
 	return { path, file };
 };
 
+/** Reads BZIP_CONCURRENCY ('auto' or a worker count) so benchmarks can exercise the parallel decoder. */
+export const getConcurrency = (): number | 'auto' | undefined => {
+	const value = Bun.env.BZIP_CONCURRENCY;
+	if (value === undefined || value === '') return undefined;
+	if (value === 'auto') return 'auto';
+	const parsed = Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < 1)
+		throw new RangeError("BZIP_CONCURRENCY must be 'auto' or a positive integer");
+	return parsed;
+};
+
 export const createOutputMeasurement = () => {
 	const hash = new Bun.CryptoHasher('sha256');
 	let outputBytes = 0;

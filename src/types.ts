@@ -21,6 +21,11 @@ export interface DecompressOptions {
 export interface DecompressionStreamOptions extends DecompressOptions {
 	/** Yield between decoded blocks after this much work. Zero yields after every block; omit to never yield. */
 	yieldAfterMs?: number;
+	/**
+	 * Decode blocks on this many worker threads. 'auto' uses the reported hardware concurrency.
+	 * Defaults to 1, which decodes on the calling thread.
+	 */
+	concurrency?: number | 'auto';
 }
 
 export interface ResolvedCompressOptions {
@@ -37,4 +42,5 @@ export interface ResolvedDecompressOptions {
 
 export interface ResolvedDecompressionStreamOptions extends ResolvedDecompressOptions {
 	yieldAfterMs: number | undefined;
+	concurrency: number;
 }

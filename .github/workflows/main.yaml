@@ -26,6 +26,9 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun run typecheck
             - run: npm test
+            - run: bun run test:parallel
+            - run: bun run test:parallel:large
             - run: npm run test:interop
             - run: bun run build
+            - run: bun run test:package
             - run: npm run pack:check
