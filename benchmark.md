@@ -20,3 +20,19 @@ Input SHA-256: `ff3a48e9a72f338784023ad81291b87583058dbb1a47df1027799b35e3c7fe3d
 | lbzip2                   |     0.882 s |       364.71 MB/s |   0.858–0.913 s |
 | bzip2-codec (JS, auto)   |     1.891 s |       170.20 MB/s |   1.888–1.907 s |
 | bzip2-codec (WASM, auto) |     1.129 s |       284.97 MB/s |   1.112–1.206 s |
+
+## Apple M1
+
+Measurement: preloaded input, download/file reads and SHA-256 validation excluded. Includes decoder startup, streaming and output buffering.
+
+Updated: 2026-09-12T09:45:40.971Z. darwin arm64, Bun 1.4.2; 8 auto workers/threads, bzip2 single-threaded.
+Revision: `688d6beb0afc`. 3 successful trial(s) per decoder. Source host: `replay187.valve.net`.
+Input: 220,127,546 compressed bytes → 321,837,400 output bytes.
+Input SHA-256: `ff3a48e9a72f338784023ad81291b87583058dbb1a47df1027799b35e3c7fe3d`. Output SHA-256: `8c79250cc0e4d90ae076a022c0802f312a6058f05beddcff65de883d16214f02`.
+
+| Decoder                  | Median time | Output throughput |  Observed range |
+| ------------------------ | ----------: | ----------------: | --------------: |
+| bzip2                    |    10.463 s |        30.76 MB/s | 10.450–10.465 s |
+| lbzip2                   |     1.611 s |       199.72 MB/s |   1.593–1.665 s |
+| bzip2-codec (JS, auto)   |     3.599 s |        89.44 MB/s |   3.437–3.600 s |
+| bzip2-codec (WASM, auto) |     1.945 s |       165.45 MB/s |   1.897–1.997 s |
