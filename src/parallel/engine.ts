@@ -4,7 +4,7 @@ import { combineCrc } from '../format/crc32.ts';
 import type { ByteSink } from '../internal/bit-writer.ts';
 import type { ResolvedDecompressOptions } from '../types.ts';
 import { findMarker, MARKER_SCAN_LOOKAHEAD, type Marker, type MarkerKind } from './marker-scanner.ts';
-import { WorkerPool } from './pool.ts';
+import { WorkerPool, type WorkerDefinition } from './pool.ts';
 
 type SegmentKind = 'unknown' | MarkerKind;
 
@@ -103,12 +103,12 @@ export class ParallelDecoderEngine {
 		options: ResolvedDecompressOptions,
 		concurrency: number,
 		sink: ByteSink,
-		hooks: { findMarker?: MarkerFinder; onError?: (error: Error) => void } = {}
+		hooks: { findMarker?: MarkerFinder; onError?: (error: Error) => void; worker?: WorkerDefinition } = {}
 	) {
 		this.#options = options;
 		this.#sink = sink;
 		this.#onError = hooks.onError;
-		this.#pool = new WorkerPool(concurrency);
+		this.#pool = new WorkerPool(concurrency, hooks.worker);
 		this.#inFlightLimit = concurrency * 2;
 		this.#findMarker = hooks.findMarker ?? findMarker;
 	}

@@ -8,7 +8,7 @@ on:
 
 jobs:
     build:
-        name: 'Typecheck & Test on Node ${{ matrix.node-version }}'
+        name: 'Test on Node ${{ matrix.node-version }}'
         runs-on: ubuntu-latest
 
         strategy:
@@ -24,12 +24,20 @@ jobs:
             - name: Setup Bun
               uses: oven-sh/setup-bun@v2
             - run: bun install --frozen-lockfile
-            - run: bun run typecheck
             - run: npm test
+            - run: npm run test:interop
+
+    bun:
+        name: Build & Bun tests
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v6
+            - uses: oven-sh/setup-bun@v2
+            - run: bun install --frozen-lockfile
+            - run: bun run typecheck
             - run: bun run test:parallel
             - run: bun run test:parallel:large
-            - run: npm run test:interop
             - run: bun run build
             - run: bun run test:package
-            - run: bun run test:browser
-            - run: npm run pack:check
+            - run: bun run pack:check

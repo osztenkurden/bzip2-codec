@@ -336,7 +336,7 @@ const createBlockEmitter = (
 	};
 };
 
-const decodeNextBlock = (
+export const decodeNextBlock = (
 	reader: BitReader,
 	maximumBlockLength: number,
 	maximumOutputLength: number,
@@ -571,6 +571,7 @@ export const decodeStandaloneBlock = (
 
 export class DecoderEngine {
 	readonly #options: ResolvedDecompressOptions;
+	readonly #decodeBlock: typeof decodeNextBlock;
 	readonly #input = new InputBuffer();
 	#state: DecoderState = 'header';
 	#member = 0;
@@ -581,8 +582,9 @@ export class DecoderEngine {
 	#outputLength = 0;
 	#minimumBytesForBlockRetry = 0;
 
-	constructor(options: ResolvedDecompressOptions) {
+	constructor(options: ResolvedDecompressOptions, decodeBlock = decodeNextBlock) {
 		this.#options = options;
+		this.#decodeBlock = decodeBlock;
 	}
 
 	push(chunk: Uint8Array, sink: ByteSink): void {
@@ -665,7 +667,7 @@ export class DecoderEngine {
 					let result: BlockResult;
 
 					try {
-						result = decodeNextBlock(
+						result = this.#decodeBlock(
 							reader,
 							this.#maximumBlockLength,
 							this.#options.maxOutputBytes - this.#outputLength,

@@ -1,0 +1,38 @@
+{
+	"upstream": "https://github.com/kjn/lbzip2",
+	"revision": "724352c0495904ab16e33817fae85b262f319318",
+	"bytes": 22273,
+	"sha256": "eef36a6f5ca682b962ce88f3bb9c59335f2a3230bdc0c45d6026fdd1656077c2",
+	"flags": [
+		"--target=wasm32-unknown-unknown",
+		"-O3",
+		"-flto",
+		"-ffreestanding",
+		"-fno-builtin",
+		"-nostdlib",
+		"-std=c11",
+		"-I",
+		"include",
+		"-Wl,--no-entry",
+		"-Wl,--export-memory",
+		"-Wl,--initial-memory=16777216",
+		"-Wl,--max-memory=16777216",
+		"-Wl,-z,stack-size=262144",
+		"-Wl,--strip-all"
+	],
+	"compiler": "clang version 22.1.8\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin\n",
+	"sourceHashes": {
+		"bridge.c": "c7dee1b60ce23c6960b70f096a638be6b173ea494f340d5c10212022d3cddff5",
+		"vendor/common.h": "4919b172c7de75dc1c3df62d580f1b2edd6ee2359a18282afa4cd54d2122e87a",
+		"vendor/crctab.c": "3c2383e0c34e3f502e2cb28dba111c60c0211a52eea8f411f9bdd308a085fc4c",
+		"vendor/decode.c": "79c63a1b47a5bb18952ae5bfe9efcfd66597e87695013189fc1ed27421091f4c",
+		"vendor/decode.h": "b0e8db10f226d01f5ebe32b229fd6c2d9e9ebfb567f0228cf548e1a5203c509e",
+		"vendor/main.h": "911d7aff6410f9b73b305782982dd9d75afed420f66ffbf855116cf49c74e8b6",
+		"include/assert.h": "98ab6f4f285afac736748e15883b98cea7ae073255e6e8d9da5476ae8e9b8308",
+		"include/errno.h": "55bc579b3f26cd17663d1d6309264e7710a8736d56860214f5bc4dda017591d8",
+		"include/inttypes.h": "dd1e65241020275e480c9f023566ad3d27cad42dfac5d4d1b9c176732d1eede5",
+		"include/stdlib.h": "a39db66d57da75586e4d9c94cf6682c11aa6156c46f866aa7edfa8dab0c10792",
+		"include/string.h": "9ffd8d46628ae13909e2de4a076894d6bc9abc7796bd1226cd8696652dcf6030",
+		"include/arpa/inet.h": "818b0b748eaa7795712e89a77364813e5dfafa52b8f09d33aa976b85a4d16067"
+	}
+}

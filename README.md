@@ -40,8 +40,6 @@ await source.pipeThrough(createCompressionStream({ blockSize: 9 })).pipeTo(desti
 
 These are standard `TransformStream<Uint8Array, Uint8Array>` instances, so they compose with `pipeThrough()` and `pipeTo()` in browsers as well as Node.js.
 
-Bzip2's Burrows-Wheeler transform operates on complete blocks. The streaming implementation therefore keeps the current block and its working data in memory, but never needs to collect the complete file. The default block size is 900,000 bytes and output is emitted in 64 KiB chunks.
-
 ## In-memory API
 
 For small values, the convenience functions return one `Uint8Array`:
@@ -54,6 +52,31 @@ const decoded = decompress(encoded);
 ```
 
 Unlike the stream APIs, `compress()` and `decompress()` necessarily collect the complete result in memory.
+
+## WebAssembly decoder
+
+Import from `bzip2-codec/wasm` to use the optional WebAssembly decoder:
+
+```ts
+import { createDecompressionStream, decompress } from 'bzip2-codec/wasm';
+
+const response = await fetch(url);
+if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+await response.body.pipeThrough(createDecompressionStream({ concurrency: 2 })).pipeTo(destination);
+
+// Synchronous decoding also uses WASM.
+const decoded = decompress(compressedBytes);
+```
+
+The subpath exports the same API as `bzip2-codec`. Compression uses JavaScript. WASM is embedded and initialized on first use; no extra assets or setup are needed. The main import stays JS-only.
+
+Node.js supports synchronous and single-threaded WASM decoding. For workers, use Bun, Deno or a browser and set `concurrency` to a number or `'auto'`.
+
+Each WASM instance uses 16 MiB of linear memory plus input/output buffers. WASM decoding buffers a complete block before emission. Set `maxOutputBytes` to limit expansion.
+
+For browser CSP, allow `script-src 'self' 'wasm-unsafe-eval'` and, when using workers, `worker-src 'self' blob:`. If WebAssembly is unavailable, use the main import.
+
+See [benchmark results](benchmark.md) and [WASM build instructions](wasm/README.md).
 
 ## API
 
@@ -104,23 +127,21 @@ Set `yieldAfterMs` when decompression shares a JavaScript thread with latency-se
 await source.pipeThrough(createDecompressionStream({ yieldAfterMs: 8 })).pipeTo(destination);
 ```
 
-When the elapsed decoding time reaches the configured budget, the transformer yields to the event loop after the current checksum-validated bzip2 block. An individual block remains an atomic unit, so the interval is a responsiveness target rather than a hard deadline. Omitting `yieldAfterMs` retains the synchronous, maximum-throughput path without scheduling timers.
+Yielding happens between blocks, so `yieldAfterMs` is not a hard deadline. Omit it for maximum throughput.
 
 #### Parallel decompression
-
-Every bzip2 block is compressed independently, so a stream can be decoded the way `lbzip2` and `pbzip2` do it: split the input at block boundaries and decode the blocks on several threads at once. Set `concurrency` to enable this:
 
 ```ts
 await source.pipeThrough(createDecompressionStream({ concurrency: 'auto' })).pipeTo(destination);
 ```
 
-`'auto'` uses the runtime's reported hardware concurrency; a number sets the maximum worker count. Workers are created lazily on the first block, so small inputs pay for only as many threads as they have blocks. Output is emitted in stream order and every block is still checksum-validated before it is emitted, so the observable behaviour matches the single-threaded path, including error codes. `yieldAfterMs` is not needed when workers decode the blocks; the calling thread only scans for block boundaries and forwards output.
+- Default: `1`, decoding on the calling thread.
+- `'auto'`: use the runtime's reported hardware concurrency.
+- A number above `1`: set the maximum worker count.
 
-The main thread locates blocks by scanning for the 48-bit block marker at every bit offset. The same bit pattern can in principle occur inside compressed data; the decoder handles this by extending any segment that fails to decode over the following segment and retrying, so a spurious marker costs a retry rather than a wrong result.
+Workers require Bun, Deno or a browser. In Node.js, `'auto'` resolves to `1`; an explicit count above `1` throws `TypeError`. Worker scripts are embedded and loaded from Blob URLs; no asset configuration is needed. Browser CSP must allow `worker-src 'self' blob:`.
 
-Parallel decoding uses the standard Web Worker API, so it works in browsers, Bun, and Deno, and the published package embeds the worker script and starts it from a Blob URL. Consumers do not need to copy worker files or configure worker asset paths. Blob URLs are released when workers finish loading, fail to load, or are terminated. If your site uses Content Security Policy, allow `blob:` in [`worker-src`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/worker-src) (for example, `worker-src 'self' blob:`). Node.js does not expose a global `Worker` (for now!), so it always decodes on the calling thread: `concurrency: 'auto'` resolves to 1 there, and an explicit count above 1 throws a `TypeError`. Expect memory use to grow with the worker count: each worker holds its own block workspace, and the main thread buffers up to two decoded blocks per worker while it waits to emit them in order. See [BENCHMARK.md](BENCHMARK.md) for a reproducible throughput and memory comparison.
-
-Workers materialize the entire expanded output of each block before transferring it to the calling thread, including blocks that exceed the sequential decoder's bounded output cache. Highly repetitive input can therefore use much more memory than its compressed size or declared block size suggests. `outputChunkSize` limits emitted chunk sizes, not worker allocations. Use `maxOutputBytes` to limit expansion and choose a lower concurrency when memory is constrained. The worker queue limit does not include chunks already enqueued in the readable stream.
+Output stays in order and is checksum-validated. `yieldAfterMs` is unnecessary with workers. Memory use grows with concurrency: workers buffer complete decoded blocks. `outputChunkSize` limits emitted chunks, not total memory; use `maxOutputBytes` and fewer workers when memory is constrained.
 
 ### `compress(input, options?)`
 
@@ -148,47 +169,52 @@ try {
 
 `BzipError.code` is stable for programmatic handling. Depending on where an error occurs, the instance also includes `byteOffset`, `bitOffset`, `member`, `block`, `expected`, and `actual` details. Invalid API arguments use the standard `TypeError` or `RangeError` classes.
 
+## CPU benchmark report
+
+```sh
+bun benchmark.ts                         # default replay archive, three rounds
+bun benchmark.ts 'https://host/demo.bz2'  # another URL
+bun benchmark.ts 'https://host/demo.bz2' 5
+```
+
+Compares bzip2, lbzip2, JS auto concurrency and WASM auto concurrency using an IPv4 fetch → decoder → SHA-256 pipeline. Install `bzip2` and `lbzip2` to include their results.
+
+[benchmark.md](benchmark.md) is grouped by CPU model. Rerunning updates that CPU's section; a new CPU is appended. Raw trials go to `benchmark.md.json`. Decoder failures or mismatched hashes leave the Markdown unchanged.
+
+The default runs three rounds of a 220 MB archive: about 2.6 GB downloaded. Times include networking, startup and hashing.
+
+| Environment variable        | Default             |
+| --------------------------- | ------------------- |
+| `BZIP_BENCHMARK_URL`        | Replay archive URL  |
+| `BZIP_BENCHMARK_RUNS`       | `3`                 |
+| `BZIP_BENCHMARK_TIMEOUT_MS` | `1800000` per trial |
+| `BZIP_BENCHMARK_REPORT`     | `benchmark.md`      |
+
+CLI URL and round count override environment variables.
+
 ## Development
 
 ```sh
 bun install
 bun run typecheck
-npm test
-npm run test:parallel
-npm run test:interop
+npm test                    # Node.js
+bun run test:parallel       # Bun workers and WASM
+bun run test:interop        # requires system bzip2
 bun run build
-bun run test:package
-bun run test:browser
+bun run test:package        # built JS/WASM exports and Blob workers
 ```
 
-`bun run test:browser` re-bundles the built package and checks Blob workers in headless Chromium. Install Chromium or set `BZIP_BROWSER` to a Chrome/Chromium executable.
-
-`npm test` runs under Node.js, which has no Web Worker API, so the parallel decoder tests skip there; `npm run test:parallel` runs them under Bun.
-
-`bun run test:parallel:large` exercises more than 512 MiB of generated compressed input without loading the whole stream into memory. CI runs this boundary regression and the built-package worker test.
-
-`npm run test:large` additionally streams a local large fixture into a hash sink without collecting its output. Large fixtures in `test_files/` are deliberately excluded from Git and npm packages.
-
-To compare total peak resident memory for the in-memory API, a native `Bun.file()` stream, and a Node file-stream adapter, run:
+CI tests Node.js 22 and 24, and runs build and Bun checks once. Additional checks:
 
 ```sh
-bun run memory:decompress
-bun run memory:decompress -- path/to/another-file.bz2
+bun run test:parallel:large  # generated input exceeding 512 MiB; also runs in CI
+bun run test:large           # local fixture in test_files/
+bun run memory:decompress -- path/to/file.bz2
+bun run benchmark:decompress -- path/to/file.bz2
+bun run benchmark:decoder -- path/to/file.bz2
 ```
 
-Set `BZIP_CONCURRENCY=auto` (or a worker count) to run the stream-based memory reports and `bun run benchmark:decompress` with the parallel decoder.
-
-Each method runs in a fresh Bun process. The report verifies that every method produced the same byte count and SHA-256 digest, then obtains lifetime peak RSS from Bun's documented [`subprocess.resourceUsage()` API](https://bun.com/docs/runtime/child-process#resource-usage).
-
-For warmed decompression throughput, with input generation and SHA-256 verification outside the timed region:
-
-```sh
-bun run benchmark:decoder
-BZIP_BENCHMARK_RUNS=15 bun run benchmark:decoder -- path/to/file.bz2
-node scripts/benchmark-decoder.ts
-```
-
-This benchmark requires system `bzip2` to generate independent fixtures or verify supplied files. It measures the synchronous API and streaming with 64 KiB input chunks separately, verifies every output, and reports median MiB/s per fixture. Timed measurements retain decoded output, so sufficient memory for the uncompressed fixture is required. To compare another checkout, set `BZIP_BENCHMARK_MODULE` to its absolute `file:///.../src/index.ts` URL.
+Set `BZIP_CONCURRENCY=auto` or a worker count for the memory and file-stream benchmarks. `benchmark:decoder` measures warmed synchronous and streaming throughput and requires system `bzip2`.
 
 ## License
 

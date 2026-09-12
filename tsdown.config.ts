@@ -1,17 +1,47 @@
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { WASM_BASE64 } from './src/wasm/bytes.ts';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, Rolldown } from 'tsdown';
 
-const workerSource = fileURLToPath(new URL('./src/parallel/worker-source.ts', import.meta.url));
-const workerEntry = fileURLToPath(new URL('./src/parallel/decompression-worker.ts', import.meta.url));
+const workers = new Map(
+	[
+		['src/parallel/worker-source.ts', 'src/parallel/decompression-worker.ts'],
+		['src/wasm/worker-source.ts', 'src/wasm/worker.ts']
+	].map(([source, entry]) => [
+		fileURLToPath(new URL(source!, import.meta.url)),
+		fileURLToPath(new URL(entry!, import.meta.url))
+	])
+);
 
 export default defineConfig({
-	entry: 'src/index.ts',
+	entry: { index: 'src/index.ts', wasm: 'src/wasm/index.ts' },
 	dts: true,
 	plugins: [
 		{
 			name: 'bzip2-codec:inline-worker',
+			async buildStart() {
+				const manifestUrl = new URL('./wasm/build.json', import.meta.url);
+				const manifest = JSON.parse(await readFile(manifestUrl, 'utf8')) as {
+					sha256: string;
+					sourceHashes: Record<string, string>;
+				};
+				const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+				if (hash(Buffer.from(WASM_BASE64, 'base64')) !== manifest.sha256)
+					throw new Error('WASM bytes do not match build.json; run bun run build:wasm');
+				this.addWatchFile(fileURLToPath(manifestUrl));
+				await Promise.all(
+					Object.entries(manifest.sourceHashes).map(async ([file, expected]) => {
+						const url = new URL(`./wasm/${file}`, import.meta.url);
+						this.addWatchFile(fileURLToPath(url));
+						if (hash(await readFile(url)) !== expected)
+							throw new Error(`Stale WASM source ${file}; run bun run build:wasm`);
+					})
+				);
+			},
 			async load(id) {
-				if (id !== workerSource) return null;
+				const workerEntry = workers.get(id);
+				if (workerEntry === undefined) return null;
 				const bundle = await Rolldown.rolldown({ input: workerEntry, platform: 'browser' });
 				try {
 					const { output } = await bundle.generate({ format: 'iife', minify: true });

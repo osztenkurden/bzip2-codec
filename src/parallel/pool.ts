@@ -1,6 +1,8 @@
 import { WORKER_READY, type BlockOutcome, type BlockTask, type WorkerMessage } from './protocol.ts';
 import { WORKER_SOURCE } from './worker-source.ts';
 
+export type WorkerDefinition = string | URL;
+
 /** The subset of the Web Worker API the pool needs. */
 interface WorkerHandle {
 	postMessage(task: BlockTask, transfer: ArrayBuffer[]): void;
@@ -33,11 +35,11 @@ export const resolveHardwareConcurrency = (): number => {
 /** True when the runtime provides the Web Worker API (browsers, Bun, Deno). */
 export const supportsWorkers = (): boolean => typeof globalThis.Worker === 'function';
 
-const createWorker = (callbacks: WorkerCallbacks): WorkerHandle => {
+const createWorker = (callbacks: WorkerCallbacks, definition: WorkerDefinition): WorkerHandle => {
 	const url =
-		WORKER_SOURCE === undefined
-			? new URL('./decompression-worker.ts', import.meta.url)
-			: URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
+		typeof definition === 'string'
+			? URL.createObjectURL(new Blob([definition], { type: 'text/javascript' }))
+			: definition;
 	let revoked = false;
 	const revoke = (): void => {
 		if (typeof url === 'string' && !revoked) {
@@ -74,14 +76,19 @@ const createWorker = (callbacks: WorkerCallbacks): WorkerHandle => {
 /** Lazily spawns up to `size` workers and hands each block task to an idle one. */
 export class WorkerPool {
 	readonly #size: number;
+	readonly #definition: WorkerDefinition;
 	readonly #slots: Slot[] = [];
 	readonly #queue: Waiter[] = [];
 	readonly #inFlight = new Map<number, Waiter>();
 	#closed = false;
 
-	constructor(size: number) {
+	constructor(
+		size: number,
+		definition: WorkerDefinition = WORKER_SOURCE ?? new URL('./decompression-worker.ts', import.meta.url)
+	) {
 		if (!supportsWorkers()) throw new TypeError('This runtime does not provide the Web Worker API');
 		this.#size = size;
+		this.#definition = definition;
 	}
 
 	run(task: BlockTask): Promise<BlockOutcome> {
@@ -126,26 +133,29 @@ export class WorkerPool {
 	#spawn(): void {
 		const slot: Slot = { worker: undefined as unknown as WorkerHandle, ready: false, busy: false };
 		try {
-			slot.worker = createWorker({
-				onMessage: message => {
-					if (message === WORKER_READY) {
-						slot.ready = true;
+			slot.worker = createWorker(
+				{
+					onMessage: message => {
+						if (message === WORKER_READY) {
+							slot.ready = true;
+							this.#dispatch();
+							return;
+						}
+						const waiter = this.#inFlight.get(message.id);
+						this.#inFlight.delete(message.id);
+						slot.busy = false;
+						waiter?.resolve(message);
 						this.#dispatch();
-						return;
+					},
+					onError: error => {
+						if (this.#closed || !this.#slots.includes(slot)) return;
+						this.#remove(slot);
+						slot.worker.terminate();
+						this.#failAll(error);
 					}
-					const waiter = this.#inFlight.get(message.id);
-					this.#inFlight.delete(message.id);
-					slot.busy = false;
-					waiter?.resolve(message);
-					this.#dispatch();
 				},
-				onError: error => {
-					if (this.#closed || !this.#slots.includes(slot)) return;
-					this.#remove(slot);
-					slot.worker.terminate();
-					this.#failAll(error);
-				}
-			});
+				this.#definition
+			);
 			this.#slots.push(slot);
 		} catch (error) {
 			this.#failAll(error);
