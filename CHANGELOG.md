@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.1.1...v1.2.0) (2026-09-12)
+
+
+### Features
+
+* add concurency ([adf9569](https://github.com/osztenkurden/bzip2-codec/commit/adf9569fe076bcf06a83877ee8a4cb0f62e64098))
+
 ## [1.1.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.1.0...v1.1.1) (2026-09-09)
 
 
