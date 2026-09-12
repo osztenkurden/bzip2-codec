@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.2.1...v1.3.0) (2026-09-12)
+
+
+### Features
+
+* added wasm version for improved performance ([b731f13](https://github.com/osztenkurden/bzip2-codec/commit/b731f1391dea79681261f1864b70bd8b2937f56b))
+
 ## [1.2.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.2.0...v1.2.1) (2026-09-12)
 
 
