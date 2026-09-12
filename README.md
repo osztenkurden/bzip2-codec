@@ -118,7 +118,7 @@ await source.pipeThrough(createDecompressionStream({ concurrency: 'auto' })).pip
 
 The main thread locates blocks by scanning for the 48-bit block marker at every bit offset. The same bit pattern can in principle occur inside compressed data; the decoder handles this by extending any segment that fails to decode over the following segment and retrying, so a spurious marker costs a retry rather than a wrong result.
 
-Parallel decoding uses the standard Web Worker API, so it works in browsers, Bun, and Deno, and bundlers that understand `new Worker(new URL(..., import.meta.url))` pick the worker module up automatically. Node.js does not expose a global `Worker` (for now!), so it always decodes on the calling thread: `concurrency: 'auto'` resolves to 1 there, and an explicit count above 1 throws a `TypeError`. Expect memory use to grow with the worker count: each worker holds its own block workspace, and the main thread buffers up to two decoded blocks per worker while it waits to emit them in order. See [BENCHMARK.md](BENCHMARK.md) for a reproducible throughput and memory comparison.
+Parallel decoding uses the standard Web Worker API, so it works in browsers, Bun, and Deno, and the published package embeds the worker script and starts it from a Blob URL. Consumers do not need to copy worker files or configure worker asset paths. Blob URLs are released when workers finish loading, fail to load, or are terminated. If your site uses Content Security Policy, allow `blob:` in [`worker-src`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/worker-src) (for example, `worker-src 'self' blob:`). Node.js does not expose a global `Worker` (for now!), so it always decodes on the calling thread: `concurrency: 'auto'` resolves to 1 there, and an explicit count above 1 throws a `TypeError`. Expect memory use to grow with the worker count: each worker holds its own block workspace, and the main thread buffers up to two decoded blocks per worker while it waits to emit them in order. See [BENCHMARK.md](BENCHMARK.md) for a reproducible throughput and memory comparison.
 
 Workers materialize the entire expanded output of each block before transferring it to the calling thread, including blocks that exceed the sequential decoder's bounded output cache. Highly repetitive input can therefore use much more memory than its compressed size or declared block size suggests. `outputChunkSize` limits emitted chunk sizes, not worker allocations. Use `maxOutputBytes` to limit expansion and choose a lower concurrency when memory is constrained. The worker queue limit does not include chunks already enqueued in the readable stream.
 
@@ -158,7 +158,10 @@ npm run test:parallel
 npm run test:interop
 bun run build
 bun run test:package
+bun run test:browser
 ```
+
+`bun run test:browser` re-bundles the built package and checks Blob workers in headless Chromium. Install Chromium or set `BZIP_BROWSER` to a Chrome/Chromium executable.
 
 `npm test` runs under Node.js, which has no Web Worker API, so the parallel decoder tests skip there; `npm run test:parallel` runs them under Bun.
 

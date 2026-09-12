@@ -54,4 +54,4 @@ bun run build
 bun run test:package
 ```
 
-The large parallel test streams more than 512 MiB of generated compressed input into a hash sink, then checks an error beyond that boundary. The package test loads the emitted worker through `dist/index.mjs`.
+The large parallel test streams more than 512 MiB of generated compressed input into a hash sink, then checks an error beyond that boundary. The package test loads the embedded Blob worker through `dist/index.mjs`. `bun run test:browser` also re-bundles the package and runs it in headless Chromium without serving worker assets.

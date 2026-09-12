@@ -186,7 +186,12 @@ export class ParallelDecoderEngine {
 	}
 
 	close(): void {
+		// Cancellation owns the stream's error; late pool rejections must not replace it.
+		for (const segment of this.#segments) segment.generation++;
+		this.#segments.length = 0;
+		this.#state = 'finished';
 		this.#pool.close();
+		this.#notify();
 	}
 
 	// ---------------------------------------------------------------------------------------

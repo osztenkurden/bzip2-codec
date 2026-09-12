@@ -1,4 +1,5 @@
 import { WORKER_READY, type BlockOutcome, type BlockTask, type WorkerMessage } from './protocol.ts';
+import { WORKER_SOURCE } from './worker-source.ts';
 
 /** The subset of the Web Worker API the pool needs. */
 interface WorkerHandle {
@@ -33,16 +34,41 @@ export const resolveHardwareConcurrency = (): number => {
 export const supportsWorkers = (): boolean => typeof globalThis.Worker === 'function';
 
 const createWorker = (callbacks: WorkerCallbacks): WorkerHandle => {
-	// Written in the form bundlers recognise; the build rewrites the extension to .mjs.
-	const worker = new Worker(new URL('./decompression-worker.ts', import.meta.url), { type: 'module' });
-	worker.onmessage = event => callbacks.onMessage(event.data as WorkerMessage);
-	worker.onerror = event => callbacks.onError(event.error ?? new Error(event.message || 'Worker error'));
-	// Bun exposes unref() so an idle worker never keeps the process alive; browsers ignore it.
-	(worker as { unref?(): void }).unref?.();
-	return {
-		postMessage: (task, transfer) => worker.postMessage(task, transfer),
-		terminate: () => worker.terminate()
+	const url =
+		WORKER_SOURCE === undefined
+			? new URL('./decompression-worker.ts', import.meta.url)
+			: URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
+	let revoked = false;
+	const revoke = (): void => {
+		if (typeof url === 'string' && !revoked) {
+			revoked = true;
+			URL.revokeObjectURL(url);
+		}
 	};
+
+	try {
+		const worker = new Worker(url, { type: 'module' });
+		worker.onmessage = event => {
+			if (event.data === WORKER_READY) revoke();
+			callbacks.onMessage(event.data as WorkerMessage);
+		};
+		worker.onerror = event => {
+			revoke();
+			callbacks.onError(event.error ?? new Error(event.message || 'Worker error'));
+		};
+		// Bun exposes unref() so an idle worker never keeps the process alive; browsers ignore it.
+		(worker as { unref?(): void }).unref?.();
+		return {
+			postMessage: (task, transfer) => worker.postMessage(task, transfer),
+			terminate: () => {
+				worker.terminate();
+				revoke();
+			}
+		};
+	} catch (error) {
+		revoke();
+		throw error;
+	}
 };
 
 /** Lazily spawns up to `size` workers and hands each block task to an idle one. */

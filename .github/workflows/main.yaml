@@ -31,4 +31,5 @@ jobs:
             - run: npm run test:interop
             - run: bun run build
             - run: bun run test:package
+            - run: bun run test:browser
             - run: npm run pack:check
