@@ -1,23 +1,28 @@
 import { format } from 'prettier';
 import { cpus, platform, arch, tmpdir } from 'node:os';
-import { mkdtemp, rename, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, stat, rename, rm } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { spawnSync } from 'node:child_process';
+import { spawnProcess } from './scripts/benchmark/process.ts';
 import { fetchIPv4 } from './scripts/benchmark/fetch-ipv4.ts';
 import { median, REPORT_INTRO, updateCpuSection } from './scripts/benchmark/report.ts';
 
 const repository = import.meta.dirname;
 const defaultUrl = 'http://replay187.valve.net/730/003842189672549712349_0179118028.dem.bz2';
-const url = Bun.argv[2] ?? Bun.env.BZIP_BENCHMARK_URL ?? defaultUrl;
+const url = process.argv[2] ?? process.env.BZIP_BENCHMARK_URL ?? defaultUrl;
 if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('Expected an HTTP(S) archive URL');
-const rounds = Number(Bun.argv[3] ?? Bun.env.BZIP_BENCHMARK_RUNS ?? 3);
+const rounds = Number(process.argv[3] ?? process.env.BZIP_BENCHMARK_RUNS ?? 3);
 if (!Number.isSafeInteger(rounds) || rounds < 1) throw new Error('Rounds must be a positive integer');
-const timeoutMs = Number(Bun.env.BZIP_BENCHMARK_TIMEOUT_MS ?? 1800000);
+const timeoutMs = Number(process.env.BZIP_BENCHMARK_TIMEOUT_MS ?? 1800000);
 if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('Timeout must be a positive integer');
-const reportPath = resolve(Bun.env.BZIP_BENCHMARK_REPORT ?? join(repository, 'benchmark.md'));
+const reportPath = resolve(process.env.BZIP_BENCHMARK_REPORT ?? join(repository, 'benchmark.md'));
 const cpu = (cpus()[0]?.model ?? `${platform()} ${arch()} CPU`).replace(/\s+/g, ' ').trim();
 const workers = navigator.hardwareConcurrency;
 const command = async (args: string[]) => {
-	const child = Bun.spawn(args, { cwd: repository, stdout: 'pipe', stderr: 'pipe' });
+	const child = spawnProcess(args, { cwd: repository, stdout: 'pipe', stderr: 'pipe' });
 	const [stdout, stderr, code] = await Promise.all([
 		new Response(child.stdout).text(),
 		new Response(child.stderr).text(),
@@ -36,15 +41,27 @@ type Case = {
 };
 type Result = { durationMs: number; inputBytes: number; outputBytes: number; inputSha256: string; sha256: string };
 const cases: Case[] = [
-	{ name: 'bzip2', mode: 'bzip2', entry: 'index', concurrency: 1, available: !!Bun.which('bzip2') },
-	{ name: 'lbzip2', mode: 'lbzip2', entry: 'index', concurrency: workers, available: !!Bun.which('lbzip2') },
+	{
+		name: 'bzip2',
+		mode: 'bzip2',
+		entry: 'index',
+		concurrency: 1,
+		available: spawnSync('bzip2', ['--help']).status === 0
+	},
+	{
+		name: 'lbzip2',
+		mode: 'lbzip2',
+		entry: 'index',
+		concurrency: workers,
+		available: spawnSync('lbzip2', ['--help']).status === 0
+	},
 	{ name: 'bzip2-codec (JS, auto)', mode: 'js', entry: 'index', concurrency: 'auto', available: true },
 	{ name: 'bzip2-codec (WASM, auto)', mode: 'js', entry: 'wasm', concurrency: 'auto', available: true }
 ];
 
 console.log(`CPU: ${cpu}; auto concurrency: ${workers}; ${rounds} rounds.`);
 // Always measure a fresh production build, never stale dist/ or experimental source patches.
-await command([process.execPath, 'run', 'build']);
+await command([process.execPath, fileURLToPath(import.meta.resolve('tsdown/run'))]);
 const revision = await command(['git', 'rev-parse', 'HEAD']);
 const dirty = Boolean(await command(['git', 'status', '--porcelain']));
 const scratch = await mkdtemp(join(tmpdir(), 'bzip-benchmark-'));
@@ -61,7 +78,8 @@ try {
 		await response.body.cancel();
 		throw new Error('Server ignored Accept-Encoding: identity');
 	}
-	const inputBytes = await Bun.write(inputPath, response);
+	await pipeline(response.body, createWriteStream(inputPath));
+	const inputBytes = (await stat(inputPath)).size;
 	const expectedLength = response.headers.get('content-length');
 	if (expectedLength !== null && Number(expectedLength) !== inputBytes) throw new Error('Content-Length mismatch');
 	console.log(
@@ -76,7 +94,7 @@ try {
 		cpu,
 		logicalCpus: cpus().length,
 		autoConcurrency: workers,
-		runtime: Bun.version,
+		runtime: process.versions.bun ?? process.versions.node,
 		platform: platform(),
 		arch: arch(),
 		revision,
@@ -86,17 +104,20 @@ try {
 		cases: cases.map(c => ({ name: c.name, available: c.available }))
 	};
 	const saveRaw = (complete: boolean) =>
-		Bun.write(rawPath, JSON.stringify({ ...metadata, complete, attempts }, null, '\t') + '\n');
+		writeFile(rawPath, JSON.stringify({ ...metadata, complete, attempts }, null, '\t') + '\n');
 	await saveRaw(false);
 
 	const runTrial = async (c: Case, round: number): Promise<Result> => {
 		console.log(`${c.name}: round ${round}/${rounds}`);
-		const child = Bun.spawn([process.execPath, join(repository, 'scripts/benchmark/trial.ts')], {
-			stdin: 'pipe',
-			stdout: 'pipe',
-			stderr: 'pipe'
-		});
-		child.stdin.write(
+		const child = spawnProcess(
+			[process.execPath, ...process.execArgv, join(repository, 'scripts/benchmark/trial.ts')],
+			{
+				stdin: 'pipe',
+				stdout: 'pipe',
+				stderr: 'pipe'
+			}
+		);
+		await child.stdin.write(
 			JSON.stringify({
 				inputPath,
 				bundle: join(repository, `dist/${c.entry}.mjs`),
@@ -164,7 +185,7 @@ try {
 
 Measurement: preloaded input, download/file reads and SHA-256 validation excluded. Includes decoder startup, streaming and output buffering.
 
-Updated: ${new Date().toISOString()}. ${platform()} ${arch()}, Bun ${Bun.version}; ${workers} auto workers/threads, bzip2 single-threaded.
+Updated: ${new Date().toISOString()}. ${platform()} ${arch()}, ${process.versions.bun ? 'Bun' : 'Node.js'} ${process.versions.bun ?? process.versions.node}; ${workers} auto workers/threads, bzip2 single-threaded.
 Revision: \`${revision.slice(0, 12)}\`${dirty ? ' (working tree has changes)' : ''}. ${rounds} successful trial(s) per decoder. Source host: \`${new URL(url).hostname}\`.
 Input: ${reference!.inputBytes.toLocaleString('en-US')} compressed bytes → ${reference!.outputBytes.toLocaleString('en-US')} output bytes.
 Input SHA-256: \`${reference!.inputSha256}\`. Output SHA-256: \`${reference!.sha256}\`.
@@ -173,10 +194,13 @@ Input SHA-256: \`${reference!.inputSha256}\`. Output SHA-256: \`${reference!.sha
 | --- | ---: | ---: | ---: |
 ${table.join('\n')}
 `;
-	const old = (await Bun.file(reportPath).exists()) ? await Bun.file(reportPath).text() : REPORT_INTRO;
+	const old = await readFile(reportPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+		if (error.code === 'ENOENT') return REPORT_INTRO;
+		throw error;
+	});
 	const temporary = join(dirname(reportPath), `.benchmark-${process.pid}-${Date.now()}.tmp`);
 	try {
-		await Bun.write(
+		await writeFile(
 			temporary,
 			updateCpuSection(
 				old,

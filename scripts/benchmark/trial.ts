@@ -1,16 +1,21 @@
 import { usage } from './usage.ts';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { text } from 'node:stream/consumers';
+import { pathToFileURL } from 'node:url';
+import { spawnProcess } from './process.ts';
 
 // Load the shared archive before timing each decoder.
-const config = JSON.parse(await Bun.stdin.text()) as {
+const config = JSON.parse(await text(process.stdin)) as {
 	inputPath: string;
 	bundle: string;
 	mode: string;
 	concurrency: number | 'auto';
 	timeoutMs: number;
 };
-const codec = config.mode === 'js' ? await import(config.bundle) : undefined;
-const bytes = new Uint8Array(await Bun.file(config.inputPath).arrayBuffer());
-const inputSha256 = new Bun.CryptoHasher('sha256').update(bytes).digest('hex');
+const codec = config.mode === 'js' ? await import(pathToFileURL(config.bundle).href) : undefined;
+const bytes = new Uint8Array(await readFile(config.inputPath));
+const inputSha256 = createHash('sha256').update(bytes).digest('hex');
 const controller = new AbortController();
 let timedOut = false;
 const timeout = setTimeout(() => {
@@ -20,7 +25,7 @@ const timeout = setTimeout(() => {
 const chunks: Uint8Array[] = [];
 let outputBytes = 0;
 let offset = 0;
-let native: ReturnType<typeof Bun.spawn> | undefined;
+let native: ReturnType<typeof spawnProcess> | undefined;
 const cpuStart = process.cpuUsage();
 const started = performance.now();
 try {
@@ -52,7 +57,7 @@ try {
 		);
 	} else {
 		// Feed the same preloaded bytes to native stdin with backpressure.
-		const child = Bun.spawn(
+		const child = spawnProcess(
 			config.mode === 'lbzip2'
 				? [
 						'lbzip2',
@@ -79,7 +84,7 @@ try {
 				(async () => {
 					try {
 						for await (const chunk of input) {
-							child.stdin.write(chunk);
+							await child.stdin.write(chunk);
 							await child.stdin.flush();
 						}
 						await child.stdin.end();
@@ -108,7 +113,7 @@ try {
 	const durationMs = performance.now() - started;
 	const cpu = process.cpuUsage(cpuStart);
 	// Validate outside the timed region, using retained output from this trial.
-	const hash = new Bun.CryptoHasher('sha256');
+	const hash = createHash('sha256');
 	for (const chunk of chunks) hash.update(chunk);
 	console.log(
 		JSON.stringify({
