@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.3.0...v1.3.1) (2026-09-14)
+
+
+### Performance Improvements
+
+* decoding improvements ([d780c5f](https://github.com/osztenkurden/bzip2-codec/commit/d780c5fb2348d54a7afc529e0578dfc81f271279))
+
 ## [1.3.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.2.1...v1.3.0) (2026-09-12)
 
 
