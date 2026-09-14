@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { BzipError, compress, createDecompressionStream, decompress } from '../src/index.ts';
+import { DecoderEngine, decodeNextBlock } from '../src/codec/decoder.ts';
+import { resolveDecompressOptions } from '../src/options.ts';
+import { findMarker } from '../src/parallel/marker-scanner.ts';
 
 const SAMPLE = Buffer.from('QlpoOTFBWSZTWeopNX0AAAJTgAAQQAAEACJgDAAgADEGTEEBkeoEPEnfEAvF3JFOFCQ6ik1fQA==', 'base64');
 const EXPECTED = new TextEncoder().encode('This is a test\n');
@@ -235,6 +238,44 @@ for (const length of [199_999, 200_000, 200_001, 200_517]) {
 		}
 	});
 }
+
+test('streaming decodes each block once, after its end marker has arrived', () => {
+	const input = new Uint8Array(400_000);
+	for (let index = 0; index < input.length; index++) input[index] = (index * 31 + (index >>> 8) * 17) & 0xff;
+	const encoded = compress(input, { blockSize: 1 });
+
+	let blocks = 0;
+	for (let marker = findMarker(encoded, 4, 32); marker !== undefined;) {
+		if (marker.kind === 'block') blocks++;
+		marker = findMarker(encoded, Math.ceil(marker.bit / 8) + 1, marker.bit + 48);
+	}
+	assert.ok(blocks > 3, 'the input should span several blocks');
+
+	let attempts = 0;
+	const engine = new DecoderEngine(resolveDecompressOptions({}), (...args) => {
+		attempts++;
+		return decodeNextBlock(...args);
+	});
+	const chunks: Uint8Array[] = [];
+	const emit = (chunk: Uint8Array) => chunks.push(chunk);
+	for (let offset = 0; offset < encoded.length; offset += 4096) {
+		engine.push(encoded.subarray(offset, Math.min(offset + 4096, encoded.length)), emit);
+	}
+	engine.finish(emit);
+
+	const output = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+	let offset = 0;
+	for (const chunk of chunks) {
+		output.set(chunk, offset);
+		offset += chunk.length;
+	}
+	assert.deepEqual(output, input);
+	// One attempt per block plus the end-of-stream marker, which may need a retry for its CRC bits.
+	assert.ok(
+		attempts >= blocks + 1 && attempts <= blocks + 2,
+		`decoder was invoked ${attempts} times for ${blocks} blocks`
+	);
+});
 
 test('validates decompression options', () => {
 	assert.throws(() => decompress(SAMPLE, { maxOutputBytes: -1 }), RangeError);

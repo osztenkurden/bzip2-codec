@@ -39,10 +39,11 @@ for (let shift = 0; shift < 8; shift++) {
 }
 
 const read24 = (bytes: Uint8Array, bit: number): number => {
-	const index = Math.floor(bit / 8);
-	const word =
-		((bytes[index]! << 24) | (bytes[index + 1]! << 16) | (bytes[index + 2]! << 8) | bytes[index + 3]!) >>> 0;
-	return (word >>> (8 - (bit & 7))) & 0xffffff;
+	const index = bit >>> 3;
+	const word = (bytes[index]! << 24) | (bytes[index + 1]! << 16) | (bytes[index + 2]! << 8) | bytes[index + 3]!;
+	// Shifting left first discards the bits before the window; the constant right shift then yields a
+	// 24-bit value that provably fits an Int32, so the JIT never has to guard against overflow.
+	return (word << (bit & 7)) >>> 8;
 };
 
 /**
@@ -51,15 +52,19 @@ const read24 = (bytes: Uint8Array, bit: number): number => {
  * first byte boundary lies before it must already have been reported.
  */
 export const findMarker = (bytes: Uint8Array, fromByte: number, minimumBit: number): Marker | undefined => {
-	const last = bytes.length - MARKER_SCAN_LOOKAHEAD;
+	// Callers derive these positions from absolute stream offsets, which optimizing JITs hand over as
+	// boxed doubles once they pass through Math.min/Math.max with Infinity or exceed the Int32 range.
+	// Coercing them here keeps the per-byte loop on the integer fast path regardless of the caller.
+	const minimum = minimumBit | 0;
+	const last = (bytes.length - MARKER_SCAN_LOOKAHEAD) | 0;
 
-	for (let index = fromByte; index <= last; index++) {
+	for (let index = fromByte | 0; index <= last; index++) {
 		const candidates = CANDIDATES[(bytes[index]! << 8) | bytes[index + 1]!]!;
 		if (candidates === 0) continue;
 
 		for (let shift = 0; shift < 8; shift++) {
 			const bit = index * 8 - shift;
-			if (bit < minimumBit) continue;
+			if (bit < minimum) continue;
 
 			if ((candidates & (1 << shift)) !== 0) {
 				if (read24(bytes, bit) === BLOCK_MARKER_HIGH && read24(bytes, bit + 24) === BLOCK_MARKER_LOW) {
