@@ -20,6 +20,8 @@ import { Readable, Writable } from 'node:stream';
 import { createDecompressionStream } from 'bzip2-codec';
 
 const source = Readable.toWeb(createReadStream('archive.bz2')) as ReadableStream<Uint8Array>;
+// or in Bun:
+// const source = Bun.file("archive").stream();
 const destination = Writable.toWeb(createWriteStream('archive'));
 
 await source.pipeThrough(createDecompressionStream()).pipeTo(destination);
