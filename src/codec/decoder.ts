@@ -1,4 +1,4 @@
-import { BzipError, type BzipErrorCode, isNeedMoreInput } from '../errors.ts';
+import { BzipError, type BzipErrorCode, isNeedMoreInput, NEED_MORE_INPUT } from '../errors.ts';
 import {
 	BLOCK_MARKER_HIGH,
 	BLOCK_MARKER_LOW,
@@ -16,6 +16,7 @@ import { BzipCrc32, combineCrc } from '../format/crc32.ts';
 import { RANDOM_NUMBERS } from '../format/randomization.ts';
 import { BitReader, InputBuffer } from '../internal/input-buffer.ts';
 import type { ByteSink } from '../internal/bit-writer.ts';
+import { findMarker, MARKER_SCAN_LOOKAHEAD } from '../parallel/marker-scanner.ts';
 import type { ResolvedDecompressOptions } from '../types.ts';
 
 interface HuffmanTable {
@@ -57,6 +58,11 @@ const HUFFMAN_SYMBOL_BITS = 9;
 const HUFFMAN_FAST_MASK = (1 << HUFFMAN_FAST_BITS) - 1;
 const HUFFMAN_SYMBOL_MASK = (1 << HUFFMAN_SYMBOL_BITS) - 1;
 const MAX_CACHED_BLOCK_EXPANSION = 2;
+// The inverse move-to-front list is kept as 16 rows of 16 bytes that drift down a 4 KiB area, as in the
+// reference decoder: a lookup shifts at most 15 bytes and 15 row bases instead of up to 255 bytes.
+const MTF_ROW_WIDTH = 16;
+const MTF_ROWS = 256 / MTF_ROW_WIDTH;
+const MTF_AREA_SIZE = 4096;
 
 const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -144,40 +150,212 @@ const createHuffmanTable = (lengths: Uint8Array, error: ErrorFactory, reader: Bi
 	};
 };
 
-const readHuffmanSymbol = (reader: BitReader, table: HuffmanTable, error: ErrorFactory): number => {
-	const start = reader.position;
-	if (start + HUFFMAN_FAST_BITS <= reader.bytes.byteLength * 8) {
-		const byteIndex = start >>> 3;
-		const prefix =
-			(((reader.bytes[byteIndex]! << 16) |
-				(reader.bytes[byteIndex + 1]! << 8) |
-				(reader.bytes[byteIndex + 2] ?? 0)) >>>
-				(24 - (start & 7) - HUFFMAN_FAST_BITS)) &
-			HUFFMAN_FAST_MASK;
-		const entry = table.fastLookup[prefix]!;
-		if (entry !== 0) {
-			reader.position = start + (entry >>> HUFFMAN_SYMBOL_BITS);
-			return entry & HUFFMAN_SYMBOL_MASK;
-		}
-	}
-
+/**
+ * Canonical decoding of a code the fast lookup table does not cover, from the low `bitCount` bits of
+ * `bits` (at least 20 of them). Returns the code length in the high bits and the symbol in the low
+ * HUFFMAN_SYMBOL_BITS. Kept out of the symbol loop so its rare paths never deoptimize the hot code.
+ */
+const readLongHuffmanCode = (
+	bits: number,
+	bitCount: number,
+	bitPosition: number,
+	totalBits: number,
+	table: HuffmanTable,
+	error: ErrorFactory,
+	reader: BitReader
+): number => {
 	let length = table.minimumLength;
-	let code = reader.readBits(length);
+	if (bitPosition + length > totalBits) throw NEED_MORE_INPUT;
+	// Every code up to the fast width is in the lookup table, so a miss is longer than that.
+	if (length <= HUFFMAN_FAST_BITS) length = HUFFMAN_FAST_BITS + 1;
 
-	while (code > table.limits[length]!) {
-		length++;
+	for (;;) {
 		if (length > table.maximumLength) {
+			reader.position = Math.min(bitPosition + table.maximumLength, totalBits);
 			throw error('INVALID_HUFFMAN_TABLE', 'Huffman code exceeds the table maximum length', reader);
 		}
-		code = code * 2 + reader.readBits(1);
+		if (bitPosition + length > totalBits) throw NEED_MORE_INPUT;
+
+		const code = (bits >>> (bitCount - length)) & ((1 << length) - 1);
+		if (code <= table.limits[length]!) {
+			const symbolIndex = code - table.bases[length]!;
+			if (symbolIndex < 0 || symbolIndex >= table.symbolCount) {
+				reader.position = bitPosition + length;
+				throw error('INVALID_HUFFMAN_TABLE', 'Huffman code resolves outside the symbol table', reader);
+			}
+			return (length << HUFFMAN_SYMBOL_BITS) | table.symbols[symbolIndex]!;
+		}
+		length++;
+	}
+};
+
+const resetMoveToFront = (mtfArea: Uint8Array, mtfBase: Int32Array): void => {
+	let fill = MTF_AREA_SIZE - 1;
+	for (let row = MTF_ROWS - 1; row >= 0; row--) {
+		for (let column = MTF_ROW_WIDTH - 1; column >= 0; column--) mtfArea[fill--] = row * MTF_ROW_WIDTH + column;
+		mtfBase[row] = fill + 1;
+	}
+};
+
+/** Inverse move-to-front for an index beyond the first row; the row bases slide down one slot. */
+const moveToFrontFar = (mtfArea: Uint8Array, mtfBase: Int32Array, index: number): number => {
+	let row = index >>> 4;
+	const rowBase = mtfBase[row]!;
+	let slot = rowBase + (index & (MTF_ROW_WIDTH - 1));
+	const value = mtfArea[slot]!;
+	while (slot > rowBase) {
+		mtfArea[slot] = mtfArea[slot - 1]!;
+		slot--;
+	}
+	mtfBase[row] = rowBase + 1;
+	// Every row below moves down one slot and inherits the last entry of the row above it.
+	while (row > 0) {
+		const base = mtfBase[row]! - 1;
+		mtfBase[row] = base;
+		mtfArea[base] = mtfArea[mtfBase[row - 1]! + MTF_ROW_WIDTH - 1]!;
+		row--;
+	}
+	const front = mtfBase[0]! - 1;
+	mtfBase[0] = front;
+	mtfArea[front] = value;
+
+	if (front === 0) {
+		// The rows reached the bottom of the area; pack them back at the top.
+		let fill = MTF_AREA_SIZE - 1;
+		for (let row = MTF_ROWS - 1; row >= 0; row--) {
+			const base = mtfBase[row]!;
+			for (let column = MTF_ROW_WIDTH - 1; column >= 0; column--) mtfArea[fill--] = mtfArea[base + column]!;
+			mtfBase[row] = fill + 1;
+		}
+	}
+	return value;
+};
+
+/**
+ * Decodes the Huffman-coded MTF/RLE2 symbols of a block into `block` and returns the block length.
+ * This is the decoder's hottest loop, so it keeps its state in locals, reads input through a bit
+ * accumulator, and delegates every rare path to a separate function.
+ */
+const decodeBlockSymbols = (
+	reader: BitReader,
+	tables: readonly HuffmanTable[],
+	selectors: Uint8Array,
+	symbolMap: Uint8Array,
+	symbolCount: number,
+	block: Uint32Array,
+	maximumBlockLength: number,
+	frequencies: Uint32Array,
+	error: ErrorFactory
+): number => {
+	const mtfArea = new Uint8Array(MTF_AREA_SIZE);
+	const mtfBase = new Int32Array(MTF_ROWS);
+	resetMoveToFront(mtfArea, mtfBase);
+
+	// The low `bitCount` bits of `bits` are unread input. Refills past the end re-read the last byte,
+	// and any symbol that would consume bits beyond the input is rejected before it is used, so
+	// truncated input still surfaces as NEED_MORE_INPUT.
+	const bytes = reader.bytes;
+	const lastByte = bytes.byteLength - 1;
+	const totalBits = bytes.byteLength * 8;
+	let bytePosition = reader.position >>> 3;
+	let bits = 0;
+	let bitCount = 0;
+	if ((reader.position & 7) !== 0) {
+		bits = bytes[bytePosition++]!;
+		bitCount = 8 - (reader.position & 7);
 	}
 
-	const symbolIndex = code - table.bases[length]!;
-	if (symbolIndex < 0 || symbolIndex >= table.symbolCount) {
-		throw error('INVALID_HUFFMAN_TABLE', 'Huffman code resolves outside the symbol table', reader);
+	const endOfBlock = symbolCount + 1;
+	let blockLength = 0;
+	let selectorIndex = 0;
+	let symbolsRemainingForSelector = 0;
+	let table = tables[0]!;
+	let fastLookup = table.fastLookup;
+	let runPower = 0;
+	let pendingRun = 0;
+
+	for (;;) {
+		if (symbolsRemainingForSelector === 0) {
+			if (selectorIndex >= selectors.length) {
+				reader.position = bytePosition * 8 - bitCount;
+				throw error('INVALID_HUFFMAN_TABLE', 'The block exhausted its Huffman selectors', reader);
+			}
+			table = tables[selectors[selectorIndex++]!]!;
+			fastLookup = table.fastLookup;
+			symbolsRemainingForSelector = HUFFMAN_GROUP_SIZE;
+		}
+		symbolsRemainingForSelector--;
+
+		while (bitCount <= 24) {
+			bits = (bits << 8) | bytes[Math.min(bytePosition, lastByte)]!;
+			bytePosition++;
+			bitCount += 8;
+		}
+
+		let entry = fastLookup[(bits >>> (bitCount - HUFFMAN_FAST_BITS)) & HUFFMAN_FAST_MASK]!;
+		if (entry === 0) {
+			entry = readLongHuffmanCode(bits, bitCount, bytePosition * 8 - bitCount, totalBits, table, error, reader);
+		}
+		const length = entry >>> HUFFMAN_SYMBOL_BITS;
+		if (bytePosition * 8 - bitCount + length > totalBits) throw NEED_MORE_INPUT;
+		bitCount -= length;
+		const nextSymbol = entry & HUFFMAN_SYMBOL_MASK;
+
+		if (nextSymbol <= RUN_B) {
+			if (runPower === 0) {
+				runPower = 1;
+				pendingRun = 0;
+			}
+			pendingRun += nextSymbol === RUN_A ? runPower : runPower * 2;
+			if (pendingRun > maximumBlockLength - blockLength) {
+				reader.position = bytePosition * 8 - bitCount;
+				throw error('BLOCK_OVERFLOW', 'Run-length data exceeds the declared block size', reader);
+			}
+			runPower *= 2;
+			continue;
+		}
+
+		if (runPower !== 0) {
+			const byte = symbolMap[mtfArea[mtfBase[0]!]!]!;
+			frequencies[byte] = frequencies[byte]! + pendingRun;
+			if (pendingRun === 1) block[blockLength] = byte;
+			else block.fill(byte, blockLength, blockLength + pendingRun);
+			blockLength += pendingRun;
+			runPower = 0;
+		}
+
+		if (nextSymbol >= endOfBlock) {
+			if (nextSymbol === endOfBlock) break;
+			reader.position = bytePosition * 8 - bitCount;
+			throw error('INVALID_HUFFMAN_TABLE', 'Decoded an invalid bzip2 symbol', reader);
+		}
+		if (blockLength >= maximumBlockLength) {
+			reader.position = bytePosition * 8 - bitCount;
+			throw error('BLOCK_OVERFLOW', 'Decoded block exceeds the declared block size', reader);
+		}
+
+		// Inverse move-to-front of index nextSymbol - 1, which is at least 1 here.
+		let index = nextSymbol - 1;
+		let value: number;
+		if (index < MTF_ROW_WIDTH) {
+			const front = mtfBase[0]!;
+			value = mtfArea[front + index]!;
+			while (index > 0) {
+				mtfArea[front + index] = mtfArea[front + index - 1]!;
+				index--;
+			}
+			mtfArea[front] = value;
+		} else {
+			value = moveToFrontFar(mtfArea, mtfBase, index);
+		}
+
+		const byte = symbolMap[value]!;
+		frequencies[byte] = frequencies[byte]! + 1;
+		block[blockLength++] = byte;
 	}
 
-	return table.symbols[symbolIndex]!;
+	reader.position = bytePosition * 8 - bitCount;
+	return blockLength;
 };
 
 const validateDecodedBlock = (
@@ -210,8 +388,34 @@ const validateDecodedBlock = (
 	let position = packed >>> 8;
 	let current = derandomize(packed & 0xff);
 	let runLength = -1;
+	let remaining = blockLength;
 
-	for (let remaining = blockLength; remaining > 0; remaining--) {
+	if (!randomized) {
+		// Fast path while the cache is guaranteed to hold another byte or a run of up to 255 copies;
+		// the general loop below finishes the rare remainder.
+		const cache = output;
+		const limit = cache.length - 255;
+		while (remaining > 0 && outputLength < limit) {
+			const previous = current;
+			packed = block[position]!;
+			current = packed & 0xff;
+			position = packed >>> 8;
+			remaining--;
+
+			if (runLength++ === 3) {
+				// Four equal bytes were emitted; this symbol is the count of further copies.
+				if (current !== 0) cache.fill(previous, outputLength, outputLength + current);
+				outputLength += current;
+				current = -1;
+				runLength = 0;
+			} else {
+				cache[outputLength++] = current;
+				if (current !== previous) runLength = 0;
+			}
+		}
+	}
+
+	for (; remaining > 0; remaining--) {
 		const previous = current;
 		packed = block[position]!;
 		current = derandomize(packed & 0xff);
@@ -426,62 +630,17 @@ export const decodeNextBlock = (
 	}
 
 	const frequencies = new Uint32Array(256);
-	const moveToFrontSymbols = new Uint8Array(256);
-	for (let symbol = 0; symbol < 256; symbol++) moveToFrontSymbols[symbol] = symbol;
-
-	let blockLength = 0;
-	let selectorIndex = 0;
-	let symbolsRemainingForSelector = 0;
-	let table: HuffmanTable | undefined;
-	let runPower = 0;
-	let pendingRun = 0;
-
-	for (;;) {
-		if (symbolsRemainingForSelector === 0) {
-			if (selectorIndex >= selectors.length) {
-				throw error('INVALID_HUFFMAN_TABLE', 'The block exhausted its Huffman selectors', reader);
-			}
-			table = tables[selectors[selectorIndex++]!];
-			symbolsRemainingForSelector = HUFFMAN_GROUP_SIZE;
-		}
-
-		symbolsRemainingForSelector--;
-		const nextSymbol = readHuffmanSymbol(reader, table!, error);
-
-		if (nextSymbol === RUN_A || nextSymbol === RUN_B) {
-			if (runPower === 0) {
-				runPower = 1;
-				pendingRun = 0;
-			}
-
-			pendingRun += nextSymbol === RUN_A ? runPower : runPower * 2;
-			if (pendingRun > maximumBlockLength - blockLength) {
-				throw error('BLOCK_OVERFLOW', 'Run-length data exceeds the declared block size', reader);
-			}
-			runPower *= 2;
-			continue;
-		}
-
-		if (runPower !== 0) {
-			const byte = symbolMap[moveToFrontSymbols[0]!]!;
-			frequencies[byte] = frequencies[byte]! + pendingRun;
-			block.fill(byte, blockLength, blockLength + pendingRun);
-			blockLength += pendingRun;
-			runPower = 0;
-		}
-
-		if (nextSymbol === symbolCount + 1) break;
-		if (nextSymbol < 2 || nextSymbol > symbolCount) {
-			throw error('INVALID_HUFFMAN_TABLE', 'Decoded an invalid bzip2 symbol', reader);
-		}
-		if (blockLength >= maximumBlockLength) {
-			throw error('BLOCK_OVERFLOW', 'Decoded block exceeds the declared block size', reader);
-		}
-
-		const byte = symbolMap[moveToFront(moveToFrontSymbols, nextSymbol - 1)]!;
-		frequencies[byte] = frequencies[byte]! + 1;
-		block[blockLength++] = byte;
-	}
+	const blockLength = decodeBlockSymbols(
+		reader,
+		tables,
+		selectors,
+		symbolMap,
+		symbolCount,
+		block,
+		maximumBlockLength,
+		frequencies,
+		error
+	);
 
 	if (blockLength === 0 || originalPointer >= blockLength) {
 		throw error('INVALID_BWT_POINTER', 'BWT origin pointer is outside the decoded block', reader);
@@ -581,6 +740,10 @@ export class DecoderEngine {
 	#combinedCrc = 0;
 	#outputLength = 0;
 	#minimumBytesForBlockRetry = 0;
+	/** True once the marker that ends the current block has been seen in the buffered input. */
+	#blockEndSeen = false;
+	/** Byte offset within the input view up to which the search for that marker has progressed. */
+	#blockEndScanByte = 0;
 
 	constructor(options: ResolvedDecompressOptions, decodeBlock = decodeNextBlock) {
 		this.#options = options;
@@ -662,6 +825,9 @@ export class DecoderEngine {
 
 				if (this.#state === 'blocks') {
 					if (!final && this.#input.byteLength < this.#minimumBytesForBlockRetry) return false;
+					// A block can only be decoded once all of it has arrived, so wait for the marker that
+					// follows it instead of decoding speculatively and discarding the partial work.
+					if (!final && !this.#blockEndBuffered()) return false;
 
 					const reader = new BitReader(this.#input.view, this.#input.bitOffset);
 					let result: BlockResult;
@@ -702,6 +868,8 @@ export class DecoderEngine {
 					}
 
 					this.#minimumBytesForBlockRetry = 0;
+					this.#blockEndSeen = false;
+					this.#blockEndScanByte = 0;
 
 					if (result.kind === 'block') {
 						if (this.#outputLength + result.outputLength > this.#options.maxOutputBytes) {
@@ -817,7 +985,37 @@ export class DecoderEngine {
 		}
 		this.#combinedCrc = 0;
 		this.#minimumBytesForBlockRetry = 0;
+		this.#blockEndSeen = false;
+		this.#blockEndScanByte = 0;
 		this.#state = 'blocks';
+		return true;
+	}
+
+	/**
+	 * Reports whether the buffered input reaches the marker that follows the current block. An
+	 * end-of-stream marker or an invalid marker at the current position needs no lookahead; the
+	 * decoder handles both. Each buffered byte is scanned at most once.
+	 */
+	#blockEndBuffered(): boolean {
+		if (this.#blockEndSeen) return true;
+
+		const view = this.#input.view;
+		const startBit = this.#input.bitOffset;
+		if (view.byteLength * 8 < startBit + 48) return false;
+
+		const current = findMarker(view, startBit >>> 3, startBit);
+		if (current === undefined || current.bit !== startBit || current.kind === 'end') {
+			this.#blockEndSeen = true;
+			return true;
+		}
+
+		const from = Math.max(this.#blockEndScanByte, (startBit + 48) >>> 3);
+		if (findMarker(view, from, startBit + 48) === undefined) {
+			this.#blockEndScanByte = Math.max(from, view.byteLength - MARKER_SCAN_LOOKAHEAD);
+			return false;
+		}
+
+		this.#blockEndSeen = true;
 		return true;
 	}
 

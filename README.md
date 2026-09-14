@@ -175,22 +175,24 @@ try {
 bun benchmark.ts                         # default replay archive, three rounds
 bun benchmark.ts 'https://host/demo.bz2'  # another URL
 bun benchmark.ts 'https://host/demo.bz2' 5
+bun benchmark.ts ./archive.bz2            # a local copy; nothing is downloaded
 ```
 
 Compares bzip2, lbzip2, JS auto concurrency and WASM auto concurrency using the same preloaded archive. The archive is downloaded once over IPv4. Install `bzip2` and `lbzip2` to include their results.
 
 [benchmark.md](benchmark.md) is grouped by CPU model. Rerunning updates that CPU's section; a new CPU is appended. Raw trials go to `benchmark.md.json`. Decoder failures or mismatched hashes leave the Markdown unchanged.
 
-The default downloads a 220 MB archive once and runs three rounds. File reads and SHA-256 validation happen outside the timed region. Timings include decoder startup, streaming and output buffering. Each trial needs memory for the compressed input and decompressed output.
+The default downloads a 220 MB archive once and runs three rounds. A local copy is used instead when it is passed as the first argument, named by `BZIP_BENCHMARK_FILE`, or present in the repository root under the URL's file name (archives there are git-ignored). File reads and SHA-256 validation happen outside the timed region. Timings include decoder startup, streaming and output buffering. Each trial needs memory for the compressed input and decompressed output.
 
-| Environment variable        | Default             |
-| --------------------------- | ------------------- |
-| `BZIP_BENCHMARK_URL`        | Replay archive URL  |
-| `BZIP_BENCHMARK_RUNS`       | `3`                 |
-| `BZIP_BENCHMARK_TIMEOUT_MS` | `1800000` per trial |
-| `BZIP_BENCHMARK_REPORT`     | `benchmark.md`      |
+| Environment variable        | Default                   |
+| --------------------------- | ------------------------- |
+| `BZIP_BENCHMARK_URL`        | Replay archive URL        |
+| `BZIP_BENCHMARK_FILE`       | Local copy of the archive |
+| `BZIP_BENCHMARK_RUNS`       | `3`                       |
+| `BZIP_BENCHMARK_TIMEOUT_MS` | `1800000` per trial       |
+| `BZIP_BENCHMARK_REPORT`     | `benchmark.md`            |
 
-CLI URL and round count override environment variables.
+CLI URL or file path and round count override environment variables.
 
 ## Development
 

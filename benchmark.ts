@@ -1,7 +1,7 @@
 import { format } from 'prettier';
 import { cpus, platform, arch, tmpdir } from 'node:os';
 import { mkdtemp, readFile, writeFile, stat, rename, rm } from 'node:fs/promises';
-import { resolve, join, dirname } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
@@ -12,8 +12,18 @@ import { median, REPORT_INTRO, updateCpuSection } from './scripts/benchmark/repo
 
 const repository = import.meta.dirname;
 const defaultUrl = 'http://replay187.valve.net/730/003842189672549712349_0179118028.dem.bz2';
-const url = process.argv[2] ?? process.env.BZIP_BENCHMARK_URL ?? defaultUrl;
-if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('Expected an HTTP(S) archive URL');
+const isHttp = (value: string) => /^https?:\/\//i.test(value);
+const source = process.argv[2];
+const url = source !== undefined && isHttp(source) ? source : (process.env.BZIP_BENCHMARK_URL ?? defaultUrl);
+if (!isHttp(url)) throw new Error('Expected an HTTP(S) archive URL');
+const isFile = async (path: string) => (await stat(path).catch(() => undefined))?.isFile() === true;
+// A local copy of the archive skips the download: a path argument, BZIP_BENCHMARK_FILE, or a file in the
+// repository root named after the URL's last path segment (archives in the root are git-ignored).
+const requiredLocal = source !== undefined && !isHttp(source) ? resolve(source) : process.env.BZIP_BENCHMARK_FILE;
+if (requiredLocal !== undefined && !(await isFile(requiredLocal)))
+	throw new Error(`Archive not found: ${requiredLocal}`);
+const cachedLocal = join(repository, basename(new URL(url).pathname));
+const localPath = requiredLocal ?? ((await isFile(cachedLocal)) ? cachedLocal : undefined);
 const rounds = Number(process.argv[3] ?? process.env.BZIP_BENCHMARK_RUNS ?? 3);
 if (!Number.isSafeInteger(rounds) || rounds < 1) throw new Error('Rounds must be a positive integer');
 const timeoutMs = Number(process.env.BZIP_BENCHMARK_TIMEOUT_MS ?? 1800000);
@@ -48,6 +58,8 @@ const cases: Case[] = [
 		concurrency: 1,
 		available: spawnSync('bzip2', ['--help']).status === 0
 	},
+	{ name: 'bzip2-codec (JS, no concurrency)', mode: 'js', entry: 'index', concurrency: 1, available: true },
+	{ name: 'bzip2-codec (WASM, no concurrency)', mode: 'js', entry: 'wasm', concurrency: 1, available: true },
 	{
 		name: 'lbzip2',
 		mode: 'lbzip2',
@@ -66,24 +78,32 @@ const revision = await command(['git', 'rev-parse', 'HEAD']);
 const dirty = Boolean(await command(['git', 'status', '--porcelain']));
 const scratch = await mkdtemp(join(tmpdir(), 'bzip-benchmark-'));
 try {
-	const inputPath = join(scratch, 'archive.bz2');
-	console.log('Downloading archive once (excluded from timings)...');
-	const response = await fetchIPv4(url, AbortSignal.timeout(timeoutMs));
-	if (!response.ok || !response.body) {
-		await response.body?.cancel();
-		throw new Error(`HTTP ${response.status}; redirects are not followed`);
+	let inputPath: string;
+	if (localPath !== undefined) {
+		inputPath = localPath;
+		console.log(`Using local archive ${inputPath} (file reads are excluded from timings).`);
+	} else {
+		inputPath = join(scratch, 'archive.bz2');
+		console.log('Downloading archive once (excluded from timings)...');
+		const response = await fetchIPv4(url, AbortSignal.timeout(timeoutMs));
+		if (!response.ok || !response.body) {
+			await response.body?.cancel();
+			throw new Error(`HTTP ${response.status}; redirects are not followed`);
+		}
+		const encoding = response.headers.get('content-encoding');
+		if (encoding && encoding !== 'identity') {
+			await response.body.cancel();
+			throw new Error('Server ignored Accept-Encoding: identity');
+		}
+		await pipeline(response.body, createWriteStream(inputPath));
+		const expectedLength = response.headers.get('content-length');
+		if (expectedLength !== null && Number(expectedLength) !== (await stat(inputPath)).size) {
+			throw new Error('Content-Length mismatch');
+		}
 	}
-	const encoding = response.headers.get('content-encoding');
-	if (encoding && encoding !== 'identity') {
-		await response.body.cancel();
-		throw new Error('Server ignored Accept-Encoding: identity');
-	}
-	await pipeline(response.body, createWriteStream(inputPath));
 	const inputBytes = (await stat(inputPath)).size;
-	const expectedLength = response.headers.get('content-length');
-	if (expectedLength !== null && Number(expectedLength) !== inputBytes) throw new Error('Content-Length mismatch');
 	console.log(
-		`Downloaded ${(inputBytes / 1e6).toFixed(1)} MB; running ${cases.filter(c => c.available).length * rounds} decoder trials.`
+		`${localPath === undefined ? 'Downloaded' : 'Loaded'} ${(inputBytes / 1e6).toFixed(1)} MB; running ${cases.filter(c => c.available).length * rounds} decoder trials.`
 	);
 	const results = new Map<string, Result[]>();
 	const attempts: object[] = [];
