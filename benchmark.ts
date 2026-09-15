@@ -31,6 +31,7 @@ if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('Timeout 
 const reportPath = resolve(process.env.BZIP_BENCHMARK_REPORT ?? join(repository, 'benchmark.md'));
 const cpu = (cpus()[0]?.model ?? `${platform()} ${arch()} CPU`).replace(/\s+/g, ' ').trim();
 const workers = navigator.hardwareConcurrency;
+const autoConcurrency = typeof Worker === 'function' ? workers : 1;
 const command = async (args: string[]) => {
 	const child = spawnProcess(args, { cwd: repository, stdout: 'pipe', stderr: 'pipe' });
 	const [stdout, stderr, code] = await Promise.all([
@@ -65,11 +66,13 @@ const cases: Case[] = [
 		concurrency: workers,
 		available: spawnSync('lbzip2', ['--help']).status === 0
 	},
+	{ name: 'bzip2-codec (JS, 1)', mode: 'js', entry: 'index', concurrency: 1, available: true },
+	{ name: 'bzip2-codec (WASM, 1)', mode: 'js', entry: 'wasm', concurrency: 1, available: true },
 	{ name: 'bzip2-codec (JS, auto)', mode: 'js', entry: 'index', concurrency: 'auto', available: true },
 	{ name: 'bzip2-codec (WASM, auto)', mode: 'js', entry: 'wasm', concurrency: 'auto', available: true }
 ];
 
-console.log(`CPU: ${cpu}; auto concurrency: ${workers}; ${rounds} rounds.`);
+console.log(`CPU: ${cpu}; codec auto concurrency: ${autoConcurrency}; ${rounds} rounds.`);
 // Always measure a fresh production build, never stale dist/ or experimental source patches.
 await command([process.execPath, fileURLToPath(import.meta.resolve('tsdown/run'))]);
 const revision = await command(['git', 'rev-parse', 'HEAD']);
@@ -111,7 +114,7 @@ try {
 		measurement: 'preloaded-input-v1',
 		cpu,
 		logicalCpus: cpus().length,
-		autoConcurrency: workers,
+		autoConcurrency,
 		runtime: process.versions.bun ?? process.versions.node,
 		platform: platform(),
 		arch: arch(),
@@ -203,7 +206,7 @@ try {
 
 Measurement: preloaded input, download/file reads and SHA-256 validation excluded. Includes decoder startup, streaming and output buffering.
 
-Updated: ${new Date().toISOString()}. ${platform()} ${arch()}, ${process.versions.bun ? 'Bun' : 'Node.js'} ${process.versions.bun ?? process.versions.node}; ${workers} auto workers/threads, bzip2 single-threaded.
+Updated: ${new Date().toISOString()}. ${platform()} ${arch()}, ${process.versions.bun ? 'Bun' : 'Node.js'} ${process.versions.bun ?? process.versions.node}; ${workers} hardware threads, codec auto concurrency ${autoConcurrency}. Explicit concurrency 1 and bzip2 runs are single-threaded.
 Revision: \`${revision.slice(0, 12)}\`${dirty ? ' (working tree has changes)' : ''}. ${rounds} successful trial(s) per decoder. Source host: \`${new URL(url).hostname}\`.
 Input: ${reference!.inputBytes.toLocaleString('en-US')} compressed bytes → ${reference!.outputBytes.toLocaleString('en-US')} output bytes.
 Input SHA-256: \`${reference!.inputSha256}\`. Output SHA-256: \`${reference!.sha256}\`.

@@ -180,7 +180,7 @@ bun benchmark.ts 'https://host/demo.bz2' 5
 bun benchmark.ts ./archive.bz2            # a local copy; nothing is downloaded
 ```
 
-Compares bzip2, lbzip2, JS auto concurrency and WASM auto concurrency using the same preloaded archive. The archive is downloaded once over IPv4. Install `bzip2` and `lbzip2` to include their results.
+Compares bzip2, lbzip2, JS and WASM using both concurrency 1 and auto concurrency on the same preloaded archive. Auto concurrency falls back to 1 when the runtime has no Web Worker API. The archive is downloaded once over IPv4. Install `bzip2` and `lbzip2` to include their results.
 
 [benchmark.md](benchmark.md) is grouped by CPU model. Rerunning updates that CPU's section; a new CPU is appended. Raw trials go to `benchmark.md.json`. Decoder failures or mismatched hashes leave the Markdown unchanged.
 

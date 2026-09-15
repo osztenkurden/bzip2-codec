@@ -827,7 +827,10 @@ export class DecoderEngine {
 					if (!final && this.#input.byteLength < this.#minimumBytesForBlockRetry) return false;
 					// A block can only be decoded once all of it has arrived, so wait for the marker that
 					// follows it instead of decoding speculatively and discarding the partial work.
-					if (!final && !this.#blockEndBuffered()) return false;
+					if (!final && !this.#blockEndBuffered()) {
+						this.#checkCompressedBlockSize();
+						return false;
+					}
 
 					const reader = new BitReader(this.#input.view, this.#input.bitOffset);
 					let result: BlockResult;
@@ -849,13 +852,7 @@ export class DecoderEngine {
 							);
 						}
 
-						const maximumCompressedBytes = this.#maximumBlockLength * 4 + 64 * 1024;
-						if (this.#input.byteLength > maximumCompressedBytes) {
-							throw this.#createError(
-								'COMPRESSED_BLOCK_TOO_LARGE',
-								'Compressed block exceeds the safe format-derived size bound'
-							);
-						}
+						const maximumCompressedBytes = this.#checkCompressedBlockSize();
 						const retryGrowth =
 							this.#input.byteLength < 64 * 1024
 								? Math.max(1, this.#input.byteLength)
@@ -989,6 +986,18 @@ export class DecoderEngine {
 		this.#blockEndScanByte = 0;
 		this.#state = 'blocks';
 		return true;
+	}
+
+	/** Only check an incomplete block: a buffered archive can contain many complete blocks. */
+	#checkCompressedBlockSize(): number {
+		const maximumCompressedBytes = this.#maximumBlockLength * 4 + 64 * 1024;
+		if (this.#input.byteLength > maximumCompressedBytes) {
+			throw this.#createError(
+				'COMPRESSED_BLOCK_TOO_LARGE',
+				'Compressed block exceeds the safe format-derived size bound'
+			);
+		}
+		return maximumCompressedBytes;
 	}
 
 	/**
