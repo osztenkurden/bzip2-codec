@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/osztenkurden/bzip2-codec/compare/v1.3.1...v1.3.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* fail on malformed input ([f310631](https://github.com/osztenkurden/bzip2-codec/commit/f31063149d8774df4ed6addbd070251a3cc52300))
+
 ## [1.3.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.3.0...v1.3.1) (2026-09-14)
 
 
