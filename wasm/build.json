@@ -22,7 +22,7 @@
 	],
 	"compiler": "clang version 22.1.8\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin\n",
 	"sourceHashes": {
-		"bridge.c": "c7dee1b60ce23c6960b70f096a638be6b173ea494f340d5c10212022d3cddff5",
+		"bridge.c": "e3f7605ab85754c3ce79eb1da3bd2d341d50310017b458c128c5ad64f23d808b",
 		"vendor/common.h": "4919b172c7de75dc1c3df62d580f1b2edd6ee2359a18282afa4cd54d2122e87a",
 		"vendor/crctab.c": "3c2383e0c34e3f502e2cb28dba111c60c0211a52eea8f411f9bdd308a085fc4c",
 		"vendor/decode.c": "79c63a1b47a5bb18952ae5bfe9efcfd66597e87695013189fc1ed27421091f4c",
