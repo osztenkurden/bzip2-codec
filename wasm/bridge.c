@@ -1,4 +1,4 @@
-/* Experimental freestanding adapter for lbzip2. SPDX-License-Identifier: GPL-3.0-or-later */
+/* Experimental freestanding adapter for lbzip2. SPDX-License-Identifier: GPL-3.0 */
 #include "vendor/common.h"
 #include "vendor/decode.h"
 

@@ -7,7 +7,7 @@
 [![npm version](https://img.shields.io/npm/v/bzip2-codec?color=cb6b26)](https://www.npmjs.com/package/bzip2-codec)
 [![CI](https://github.com/osztenkurden/bzip2-codec/actions/workflows/main.yaml/badge.svg)](https://github.com/osztenkurden/bzip2-codec/actions/workflows/main.yaml)
 [![Downloads](https://img.shields.io/npm/dm/bzip2-codec)](https://www.npmjs.com/package/bzip2-codec)
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 [Quick start](#quick-start) · [API reference](#api-reference) · [WebAssembly](#webassembly-decoder) · [Benchmarks](benchmark.md) · [Changelog](CHANGELOG.md)
 
@@ -219,4 +219,4 @@ See [Contributing](CONTRIBUTING.md) for worker, WASM, interoperability, and pack
 
 ## License
 
-[GPL-3.0-or-later](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
+[GPL-3.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
