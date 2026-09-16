@@ -38,7 +38,7 @@ for (const runtime of runtimes) {
 				const result = run(args);
 				assert.equal(result.status, 0, result.stderr.toString());
 				assert.match(result.stdout.toString(), /Usage:/);
-				assert.match(result.stdout.toString(), /Decoder backend \(default: wasm\)/);
+				assert.match(result.stdout.toString(), /Codec backend \(default: wasm\)/);
 			}
 			assert.match(run(['--version']).stdout.toString(), /^\d+\.\d+\.\d+\n$/);
 			for (const args of [
@@ -48,7 +48,6 @@ for (const runtime of runtimes) {
 				['test', '-o', '-'],
 				['test', '-f'],
 				['compress', '-f'],
-				['compress', '--backend', 'js'],
 				['decompress', '-b', '1'],
 				['test', '--unknown'],
 				['compress', '-b', '10'],
@@ -74,6 +73,11 @@ for (const runtime of runtimes) {
 			}
 			for (const backend of [undefined, 'js', 'wasm']) {
 				const backendArgs = backend ? ['--backend', backend] : [];
+				for (const concurrency of ['1', '2', 'auto']) {
+					const compressed = run(['compress', ...backendArgs, '--concurrency', concurrency], plain);
+					assert.equal(compressed.status, 0, compressed.stderr.toString());
+					assert.deepEqual(Buffer.from(decompress(compressed.stdout)), plain);
+				}
 				for (const concurrency of ['1', '2', 'auto']) {
 					for (const command of ['decompress', 'test']) {
 						const result = run([command, ...backendArgs, '--concurrency', concurrency]);

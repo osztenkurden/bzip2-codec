@@ -9,6 +9,7 @@ export class BitWriter {
 	#length = 0;
 	#partialByte = 0;
 	#partialBits = 0;
+	#completeBytes = 0;
 
 	constructor(sink: ByteSink, chunkSize = DEFAULT_CAPACITY) {
 		this.#sink = sink;
@@ -40,6 +41,38 @@ export class BitWriter {
 		this.writeBits(8, value);
 	}
 
+	get bitLength(): number {
+		return this.#completeBytes * 8 + this.#partialBits;
+	}
+
+	/** Append a block without inserting its final-byte padding into the member. */
+	writePacked(bytes: Uint8Array, bitLength: number): void {
+		if (!Number.isSafeInteger(bitLength) || bitLength < 0 || bitLength > bytes.length * 8)
+			throw new RangeError('Invalid packed bit length');
+		const whole = Math.floor(bitLength / 8);
+		if (this.#partialBits === 0) {
+			let offset = 0;
+			while (offset < whole) {
+				const count = Math.min(whole - offset, this.#buffer.length - this.#length);
+				this.#buffer.set(bytes.subarray(offset, offset + count), this.#length);
+				this.#length += count;
+				this.#completeBytes += count;
+				offset += count;
+				if (this.#length === this.#buffer.length) this.flush();
+			}
+		} else {
+			const shift = this.#partialBits,
+				mask = (1 << shift) - 1;
+			for (let offset = 0; offset < whole; offset++) {
+				const byte = bytes[offset]!;
+				this.#writeCompleteByte((this.#partialByte << (8 - shift)) | (byte >>> shift));
+				this.#partialByte = byte & mask;
+			}
+		}
+		const tail = bitLength & 7;
+		if (tail) this.writeBits(tail, bytes[whole]! >>> (8 - tail));
+	}
+
 	writeMarker(high: number, low: number): void {
 		this.writeBits(24, high);
 		this.writeBits(24, low);
@@ -63,6 +96,7 @@ export class BitWriter {
 	}
 
 	#writeCompleteByte(value: number): void {
+		this.#completeBytes++;
 		this.#buffer[this.#length++] = value;
 
 		if (this.#length === this.#buffer.length) this.flush();

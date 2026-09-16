@@ -28,6 +28,42 @@ Set `BZIP_CONCURRENCY=auto` or a worker count for the memory and file-stream ben
 
 ## CPU benchmark report
 
+### Compression
+
+```sh
+bun run benchmark:compress ./uncompressed-file 3
+```
+
+This builds the package and compares its JS and WASM encoders with installed
+`bzip2` (the single-core reference) and `lbzip2` (all logical CPUs). Both library
+encoders are measured with concurrency 1 and auto; auto falls back to 1 if Web
+Workers are unavailable. Supply an **uncompressed local file**;
+the command does not download or decompress its input.
+
+Results go to `benchmark-compress.md`, grouped by CPU, and raw trials to
+`benchmark-compress.md.json`. The report includes median time, input throughput,
+compressed size, size/input ratio, and observed time range. Each trial preloads
+input and collects compressed output; file reads, hashing, and decoding the output
+for validation are excluded from timing. Encoded bytes may differ across tools;
+every decoded result must match the original input hash and size. Failed trials
+leave the existing Markdown unchanged.
+
+For each library backend, the benchmark also requires identical compressed hashes
+across single-threaded and worker runs. JS and WASM may produce different archives.
+
+| Environment variable       | Default                                     |
+| -------------------------- | ------------------------------------------- |
+| `BZIP_COMPRESS_FILE`       | Required unless a path argument is supplied |
+| `BZIP_COMPRESS_RUNS`       | `3`                                         |
+| `BZIP_COMPRESS_BLOCK_SIZE` | `9` (accepts `1`–`9`)                       |
+| `BZIP_COMPRESS_TIMEOUT_MS` | `1800000` per trial, including validation   |
+| `BZIP_COMPRESS_REPORT`     | `benchmark-compress.md`                     |
+
+The command-line file and round count override environment values. These settings
+are separate from decompression's `BZIP_BENCHMARK_*` settings.
+
+### Decompression
+
 ```sh
 bun benchmark.ts                         # default replay archive, three rounds
 bun benchmark.ts 'https://host/demo.bz2'  # another URL

@@ -25,7 +25,7 @@
 	],
 	"scripts": {
 		"test": "node --test",
-		"test:parallel": "bun test test/parallel.test.ts test/parallel-worker.test.ts test/wasm.test.ts",
+		"test:parallel": "bun test --timeout 60000 test/parallel.test.ts test/parallel-worker.test.ts test/parallel-compress.test.ts test/wasm.test.ts",
 		"test:parallel:large": "BZIP_LARGE_TESTS=1 bun test --timeout 120000 test/parallel-large.test.ts",
 		"test:package": "BZIP_BUILT_TESTS=1 bun test --timeout 60000 test/package.test.ts test/cli.test.ts",
 		"test:interop": "BZIP_INTEROP_TESTS=1 node --test test/interoperability.test.ts",
@@ -33,6 +33,7 @@
 		"memory:decompress": "bun scripts/memory-report.ts",
 		"typecheck": "tsc",
 		"benchmark:decompress": "bun scripts/benchmark-decompression.ts",
+		"benchmark:compress": "bun scripts/benchmark-compression.ts",
 		"benchmark:decoder": "bun scripts/benchmark-decoder.ts",
 		"build": "tsdown",
 		"pack:check": "npm pack --dry-run",

@@ -9,7 +9,9 @@ test('main entry uses WASM while JS remains an explicit alternative', () => {
 	assert.deepEqual(Object.keys(main).sort(), Object.keys(js).sort());
 	assert.notEqual(main.decompress, js.decompress);
 	assert.notEqual(main.createDecompressionStream, js.createDecompressionStream);
-	assert.equal(main.compress, js.compress);
-	assert.equal(main.createCompressionStream, js.createCompressionStream);
+	assert.notEqual(main.compress, js.compress);
+	assert.notEqual(main.compressAsync, js.compressAsync);
+	assert.notEqual(main.decompressAsync, js.decompressAsync);
+	assert.notEqual(main.createCompressionStream, js.createCompressionStream);
 	assert.equal(main.BzipError, js.BzipError);
 });

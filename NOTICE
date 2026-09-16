@@ -9,14 +9,15 @@ seek-bzip is distributed under the MIT License.
 The CRC implementation is based on the MIT-licensed CRC32 implementation in
 seek-bzip, itself based on work by Matthew Francis.
 
-The encoder is an independent TypeScript implementation of the public bzip2
+The JavaScript encoder is an independent TypeScript implementation of the public bzip2
 format and algorithms described by the bzip2/libbzip2 project.
 
 The legacy randomization sequence is format data published by bzip2/libbzip2:
 
   Copyright (c) 1996-2010 Julian Seward
 
-The optional bzip2-codec/wasm decoder embeds a WebAssembly build of lbzip2:
+The default and bzip2-codec/wasm entries embed WebAssembly builds of the lbzip2
+encoder and decoder:
 
   Copyright (C) 2011, 2012, 2013, 2014 Mikolaj Izdebski
   Additional notices are retained in wasm/vendor/.

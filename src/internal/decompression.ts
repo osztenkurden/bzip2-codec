@@ -2,6 +2,7 @@ import type { DecoderEngine } from '../codec/decoder.ts';
 import { ParallelDecoderEngine } from '../parallel/engine.ts';
 import type { WorkerDefinition } from '../parallel/pool.ts';
 import { concatChunks } from './chunks.ts';
+import { transformBuffer } from './async-buffer.ts';
 import { resolveDecompressionStreamOptions, resolveDecompressOptions } from '../options.ts';
 import type { DecompressionStreamOptions, DecompressOptions, ResolvedDecompressOptions } from '../types.ts';
 
@@ -81,5 +82,7 @@ export const createDecompressionFunctions = (
 		});
 	};
 
-	return { decompress, createDecompressionStream };
+	const decompressAsync = (input: Uint8Array, options?: DecompressionStreamOptions): Promise<Uint8Array> =>
+		transformBuffer(input, () => createDecompressionStream(options));
+	return { decompress, decompressAsync, createDecompressionStream };
 };

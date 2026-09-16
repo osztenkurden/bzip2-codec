@@ -69,5 +69,6 @@ experiments
 
 # local benchmark results (keep the Markdown report)
 /benchmark.md.json
+/benchmark-compress.md.json
 /results.json
 /wasm-results*.json

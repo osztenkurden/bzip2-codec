@@ -1,29 +1,29 @@
-import { WORKER_READY, type BlockOutcome, type BlockTask, type WorkerMessage } from './protocol.ts';
+import { WORKER_READY, type BlockOutcome, type BlockTask } from './protocol.ts';
 import { WORKER_SOURCE } from './worker-source.ts';
 
 export type WorkerDefinition = string | URL;
 
 /** The subset of the Web Worker API the pool needs. */
-interface WorkerHandle {
-	postMessage(task: BlockTask, transfer: ArrayBuffer[]): void;
+interface WorkerHandle<Task> {
+	postMessage(task: Task, transfer: ArrayBuffer[]): void;
 	terminate(): void;
 }
 
-interface Slot {
-	worker: WorkerHandle;
+interface Slot<Task> {
+	worker: WorkerHandle<Task>;
 	/** Set once the worker has loaded its module; tasks posted earlier may block the caller. */
 	ready: boolean;
 	busy: boolean;
 }
 
-interface Waiter {
-	task: BlockTask;
-	resolve(outcome: BlockOutcome): void;
+interface Waiter<Task, Outcome> {
+	task: Task;
+	resolve(outcome: Outcome): void;
 	reject(error: unknown): void;
 }
 
-interface WorkerCallbacks {
-	onMessage(message: WorkerMessage): void;
+interface WorkerCallbacks<Outcome> {
+	onMessage(message: Outcome | typeof WORKER_READY): void;
 	onError(error: unknown): void;
 }
 
@@ -35,7 +35,10 @@ export const resolveHardwareConcurrency = (): number => {
 /** True when the runtime provides the Web Worker API (browsers, Bun, Deno). */
 export const supportsWorkers = (): boolean => typeof globalThis.Worker === 'function';
 
-const createWorker = (callbacks: WorkerCallbacks, definition: WorkerDefinition): WorkerHandle => {
+const createWorker = <Task, Outcome>(
+	callbacks: WorkerCallbacks<Outcome>,
+	definition: WorkerDefinition
+): WorkerHandle<Task> => {
 	const url =
 		typeof definition === 'string'
 			? URL.createObjectURL(new Blob([definition], { type: 'text/javascript' }))
@@ -52,12 +55,13 @@ const createWorker = (callbacks: WorkerCallbacks, definition: WorkerDefinition):
 		const worker = new Worker(url, { type: 'module' });
 		worker.onmessage = event => {
 			if (event.data === WORKER_READY) revoke();
-			callbacks.onMessage(event.data as WorkerMessage);
+			callbacks.onMessage(event.data as Outcome | typeof WORKER_READY);
 		};
 		worker.onerror = event => {
 			revoke();
 			callbacks.onError(event.error ?? new Error(event.message || 'Worker error'));
 		};
+		worker.onmessageerror = () => callbacks.onError(new Error('Unable to deserialize worker message'));
 		// Bun exposes unref() so an idle worker never keeps the process alive; browsers ignore it.
 		(worker as { unref?(): void }).unref?.();
 		return {
@@ -74,12 +78,15 @@ const createWorker = (callbacks: WorkerCallbacks, definition: WorkerDefinition):
 };
 
 /** Lazily spawns up to `size` workers and hands each block task to an idle one. */
-export class WorkerPool {
+export class WorkerPool<
+	Task extends { id: number; bytes: Uint8Array } = BlockTask,
+	Outcome extends { id: number } = BlockOutcome
+> {
 	readonly #size: number;
 	readonly #definition: WorkerDefinition;
-	readonly #slots: Slot[] = [];
-	readonly #queue: Waiter[] = [];
-	readonly #inFlight = new Map<number, Waiter>();
+	readonly #slots: Slot<Task>[] = [];
+	readonly #queue: Waiter<Task, Outcome>[] = [];
+	readonly #inFlight = new Map<number, Waiter<Task, Outcome>>();
 	#closed = false;
 
 	constructor(
@@ -91,8 +98,8 @@ export class WorkerPool {
 		this.#definition = definition;
 	}
 
-	run(task: BlockTask): Promise<BlockOutcome> {
-		return new Promise<BlockOutcome>((resolve, reject) => {
+	run(task: Task): Promise<Outcome> {
+		return new Promise<Outcome>((resolve, reject) => {
 			if (this.#closed) {
 				reject(new Error('Worker pool is closed'));
 				return;
@@ -103,13 +110,11 @@ export class WorkerPool {
 	}
 
 	close(): void {
-		this.#closed = true;
-		for (const slot of this.#slots) slot.worker.terminate();
-		this.#slots.length = 0;
-		this.#failAll(new Error('Worker pool is closed'));
+		this.#fail(new Error('Worker pool is closed'));
 	}
 
 	#dispatch(): void {
+		if (this.#closed) return;
 		let waiting = this.#queue.length;
 		for (const slot of this.#slots) {
 			if (waiting === 0) return;
@@ -121,19 +126,24 @@ export class WorkerPool {
 		// Every queued task that no ready worker can take gets a new worker, up to the pool size.
 		// Workers announce readiness asynchronously, so spawning never blocks the caller.
 		const starting = this.#slots.filter(slot => !slot.ready).length;
-		for (let spare = waiting - starting; spare > 0 && this.#slots.length < this.#size; spare--) this.#spawn();
+		for (let spare = waiting - starting; spare > 0 && !this.#closed && this.#slots.length < this.#size; spare--)
+			this.#spawn();
 	}
 
-	#assign(slot: Slot, waiter: Waiter): void {
+	#assign(slot: Slot<Task>, waiter: Waiter<Task, Outcome>): void {
 		slot.busy = true;
 		this.#inFlight.set(waiter.task.id, waiter);
-		slot.worker.postMessage(waiter.task, [waiter.task.bytes.buffer as ArrayBuffer]);
+		try {
+			slot.worker.postMessage(waiter.task, [waiter.task.bytes.buffer as ArrayBuffer]);
+		} catch (error) {
+			this.#fail(error);
+		}
 	}
 
 	#spawn(): void {
-		const slot: Slot = { worker: undefined as unknown as WorkerHandle, ready: false, busy: false };
+		const slot: Slot<Task> = { worker: undefined as unknown as WorkerHandle<Task>, ready: false, busy: false };
 		try {
-			slot.worker = createWorker(
+			slot.worker = createWorker<Task, Outcome>(
 				{
 					onMessage: message => {
 						if (message === WORKER_READY) {
@@ -149,16 +159,14 @@ export class WorkerPool {
 					},
 					onError: error => {
 						if (this.#closed || !this.#slots.includes(slot)) return;
-						this.#remove(slot);
-						slot.worker.terminate();
-						this.#failAll(error);
+						this.#fail(error);
 					}
 				},
 				this.#definition
 			);
 			this.#slots.push(slot);
 		} catch (error) {
-			this.#failAll(error);
+			this.#fail(error);
 		}
 	}
 
@@ -169,8 +177,11 @@ export class WorkerPool {
 		this.#queue.length = 0;
 	}
 
-	#remove(slot: Slot): void {
-		const index = this.#slots.indexOf(slot);
-		if (index !== -1) this.#slots.splice(index, 1);
+	#fail(error: unknown): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		for (const slot of this.#slots) slot.worker.terminate();
+		this.#slots.length = 0;
+		this.#failAll(error);
 	}
 }

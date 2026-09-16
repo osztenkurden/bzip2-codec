@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { parseArgs } from 'node:util';
-import { createCompressionStream, type BlockSize } from './js.ts';
+import type { BlockSize } from './types.ts';
 import { supportsWorkers } from './parallel/pool.ts';
 
 const help = `Usage: bzip2-codec compress|decompress|test [input] [options]
@@ -14,13 +14,13 @@ Input omitted or - reads stdin. compress/decompress write stdout by default.
   -o, --output PATH          Output file, or - for stdout (not test)
   -f, --force                Overwrite output file (not stdout or test)
   -b, --block-size 1..9      Compression block size (default: 9)
-      --backend js|wasm     Decoder backend (default: wasm)
+      --backend js|wasm     Codec backend (default: wasm)
       --max-output-bytes N  Nonnegative safe integer limit (default: unlimited)
       --concurrency N|auto  Positive safe integer worker count (default: 1)
   -h, --help                Show help
       --version             Show version
 
-Decoder options apply only to decompress/test. test discards output and is
+Output limits apply only to decompress/test. test discards output and is
 silent on success. Node without workers warns and uses 1 for explicit N > 1;
 auto falls back silently. Bun supports workers.
 Files are published only on success; sources are never deleted. Binary stdout
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
 	if (command !== 'compress' && values['block-size'] !== undefined)
 		throw new UsageError('--block-size applies only to compress');
 	if (command === 'compress') {
-		for (const option of ['backend', 'max-output-bytes', 'concurrency'] as const)
+		for (const option of ['max-output-bytes'] as const)
 			if (values[option] !== undefined) throw new UsageError(`--${option} applies only to decompress/test`);
 	}
 	const blockSize = integer(values['block-size'] ?? '9', 'block-size', 1);
@@ -98,12 +98,11 @@ async function main(): Promise<void> {
 		process.stderr.write('bzip2-codec: warning: workers unavailable; using --concurrency 1\n');
 		concurrency = 1;
 	}
+	const backendApi = backend === 'wasm' ? await import('./wasm/index.ts') : await import('./js.ts');
 	const codec =
 		command === 'compress'
-			? createCompressionStream({ blockSize: blockSize as BlockSize })
-			: (backend === 'wasm'
-					? (await import('./wasm/index.ts')).createDecompressionStream
-					: (await import('./js.ts')).createDecompressionStream)({ maxOutputBytes, concurrency });
+			? backendApi.createCompressionStream({ blockSize: blockSize as BlockSize, concurrency })
+			: backendApi.createDecompressionStream({ maxOutputBytes, concurrency });
 	const sourceStat = input === '-' ? fstatSync(process.stdin.fd) : await stat(input);
 	const checkOutput = async () => {
 		const target = await stat(output).catch((error: NodeJS.ErrnoException) => {

@@ -14,7 +14,7 @@ import { burrowsWheelerTransform } from '../format/block-sort.ts';
 import { BzipCrc32, combineCrc } from '../format/crc32.ts';
 import { createHuffmanEncodingTable, type HuffmanEncodingTable } from '../format/huffman-encoder.ts';
 import { BitWriter, type ByteSink } from '../internal/bit-writer.ts';
-import type { ResolvedCompressOptions } from '../types.ts';
+import type { BlockSize, ResolvedCompressOptions } from '../types.ts';
 
 const encodeMoveToFront = (
 	lastColumn: Uint8Array,
@@ -192,7 +192,7 @@ const emitSelectors = (writer: BitWriter, selectors: Uint8Array, groupCount: num
 	}
 };
 
-const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): void => {
+export const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): void => {
 	const used = new Uint8Array(256);
 	for (const byte of block) used[byte] = 1;
 
@@ -219,24 +219,18 @@ const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): vo
 	}
 };
 
-export class EncoderEngine {
-	readonly #options: ResolvedCompressOptions;
-	readonly #writer: BitWriter;
-	readonly #block: Uint8Array;
+export class BlockCollector {
+	readonly #sink: (block: Uint8Array, crc: number) => void;
+	#block: Uint8Array;
 	#blockLength = 0;
 	#blockCrc = new BzipCrc32();
-	#combinedCrc = 0;
 	#runByte = -1;
 	#runLength = 0;
 	#finished = false;
 
-	constructor(options: ResolvedCompressOptions, sink: ByteSink) {
-		this.#options = options;
-		this.#writer = new BitWriter(sink, options.outputChunkSize);
-		this.#block = new Uint8Array(options.blockSize * 100_000);
-
-		for (const byte of BZIP_HEADER) this.#writer.writeByte(byte);
-		this.#writer.writeByte(0x30 + options.blockSize);
+	constructor(blockSize: BlockSize, sink: (block: Uint8Array, crc: number) => void) {
+		this.#sink = sink;
+		this.#block = new Uint8Array(blockSize * 100_000);
 	}
 
 	push(chunk: Uint8Array): void {
@@ -255,10 +249,13 @@ export class EncoderEngine {
 	finish(): void {
 		if (this.#finished) return;
 		this.#finishBlock();
-		this.#writer.writeMarker(STREAM_END_MARKER_HIGH, STREAM_END_MARKER_LOW);
-		this.#writer.writeBits(32, this.#combinedCrc);
-		this.#writer.finish();
 		this.#finished = true;
+	}
+
+	close(): void {
+		this.#finished = true;
+		this.#block = new Uint8Array(0);
+		this.#blockLength = 0;
 	}
 
 	#requiredEncodedBytes(byte: number): number {
@@ -304,12 +301,46 @@ export class EncoderEngine {
 		if (this.#blockLength === 0) return;
 
 		const crc = this.#blockCrc.value;
-		encodeBlock(this.#writer, this.#block.subarray(0, this.#blockLength), crc);
-		this.#writer.flush();
-		this.#combinedCrc = combineCrc(this.#combinedCrc, crc);
+		this.#sink(this.#block.subarray(0, this.#blockLength), crc);
 		this.#blockLength = 0;
 		this.#blockCrc = new BzipCrc32();
 		this.#runByte = -1;
 		this.#runLength = 0;
+	}
+}
+
+export class EncoderEngine {
+	readonly #writer: BitWriter;
+	readonly #collector: BlockCollector;
+	#combinedCrc = 0;
+	#finished = false;
+
+	constructor(options: ResolvedCompressOptions, sink: ByteSink) {
+		this.#writer = new BitWriter(sink, options.outputChunkSize);
+		for (const byte of BZIP_HEADER) this.#writer.writeByte(byte);
+		this.#writer.writeByte(0x30 + options.blockSize);
+		this.#collector = new BlockCollector(options.blockSize, (block, crc) => {
+			encodeBlock(this.#writer, block, crc);
+			this.#writer.flush();
+			this.#combinedCrc = combineCrc(this.#combinedCrc, crc);
+		});
+	}
+
+	push(chunk: Uint8Array): void {
+		this.#collector.push(chunk);
+	}
+
+	close(): void {
+		this.#finished = true;
+		this.#collector.close();
+	}
+
+	finish(): void {
+		if (this.#finished) return;
+		this.#collector.finish();
+		this.#writer.writeMarker(STREAM_END_MARKER_HIGH, STREAM_END_MARKER_LOW);
+		this.#writer.writeBits(32, this.#combinedCrc);
+		this.#writer.finish();
+		this.#finished = true;
 	}
 }
