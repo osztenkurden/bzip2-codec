@@ -59,6 +59,8 @@ const cases: Case[] = [
 		concurrency: 1,
 		available: spawnSync('bzip2', ['--help']).status === 0
 	},
+	{ name: 'bzip2-codec (JS, 1)', mode: 'js', entry: 'index', concurrency: 1, available: true },
+	{ name: 'bzip2-codec (WASM, 1)', mode: 'js', entry: 'wasm', concurrency: 1, available: true },
 	{
 		name: 'lbzip2',
 		mode: 'lbzip2',
@@ -66,8 +68,6 @@ const cases: Case[] = [
 		concurrency: workers,
 		available: spawnSync('lbzip2', ['--help']).status === 0
 	},
-	{ name: 'bzip2-codec (JS, 1)', mode: 'js', entry: 'index', concurrency: 1, available: true },
-	{ name: 'bzip2-codec (WASM, 1)', mode: 'js', entry: 'wasm', concurrency: 1, available: true },
 	{ name: 'bzip2-codec (JS, auto)', mode: 'js', entry: 'index', concurrency: 'auto', available: true },
 	{ name: 'bzip2-codec (WASM, auto)', mode: 'js', entry: 'wasm', concurrency: 'auto', available: true }
 ];
