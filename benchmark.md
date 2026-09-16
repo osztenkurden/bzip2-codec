@@ -25,17 +25,19 @@ Input SHA-256: `ff3a48e9a72f338784023ad81291b87583058dbb1a47df1027799b35e3c7fe3d
 
 Measurement: preloaded input, download/file reads and SHA-256 validation excluded. Includes decoder startup, streaming and output buffering.
 
-Updated: 2026-09-14T14:29:47.792Z. darwin arm64, Bun 1.4.2; 8 auto workers/threads, bzip2 single-threaded.
-Revision: `fd317e3ad32c`. 3 successful trial(s) per decoder. Source host: `replay187.valve.net`.
+Updated: 2026-09-16T12:12:30.863Z. darwin arm64, Bun 1.4.2; 8 hardware threads, codec auto concurrency 8. Explicit concurrency 1 and bzip2 runs are single-threaded.
+Revision: `b1feab8a4f4c`. 3 successful trial(s) per decoder. Source host: `replay187.valve.net`.
 Input: 220,127,546 compressed bytes → 321,837,400 output bytes.
 Input SHA-256: `ff3a48e9a72f338784023ad81291b87583058dbb1a47df1027799b35e3c7fe3d`. Output SHA-256: `8c79250cc0e4d90ae076a022c0802f312a6058f05beddcff65de883d16214f02`.
 
 | Decoder                  | Median time | Output throughput |  Observed range |
 | ------------------------ | ----------: | ----------------: | --------------: |
-| bzip2                    |    10.450 s |        30.80 MB/s | 10.431–10.466 s |
-| lbzip2                   |     1.607 s |       200.28 MB/s |   1.604–1.624 s |
-| bzip2-codec (JS, auto)   |     2.369 s |       135.84 MB/s |   2.338–2.546 s |
-| bzip2-codec (WASM, auto) |     1.843 s |       174.61 MB/s |   1.816–1.906 s |
+| bzip2                    |    10.453 s |        30.79 MB/s | 10.443–10.470 s |
+| bzip2-codec (JS, 1)      |     9.590 s |        33.56 MB/s |   9.587–9.619 s |
+| bzip2-codec (WASM, 1)    |     7.949 s |        40.49 MB/s |   7.948–7.971 s |
+| lbzip2                   |     1.565 s |       205.66 MB/s |   1.558–1.581 s |
+| bzip2-codec (JS, auto)   |     2.367 s |       135.98 MB/s |   2.328–2.402 s |
+| bzip2-codec (WASM, auto) |     1.759 s |       182.97 MB/s |   1.746–1.802 s |
 
 ## Intel(R) Core(TM) Ultra 9 275HX
 
