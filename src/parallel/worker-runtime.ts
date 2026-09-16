@@ -64,10 +64,7 @@ export const startWorker = (decodeStandaloneBlock: typeof DecodeBlock): void => 
 		post(outcome, transfer);
 	};
 
-	const scope = globalThis as unknown as {
-		onmessage: ((event: { data: unknown }) => void) | null;
-		postMessage(message: unknown, transfer: ArrayBuffer[]): void;
-	};
+	const scope = globalThis;
 	scope.onmessage = event =>
 		handle(event.data as BlockTask, (outcome, transfer) => scope.postMessage(outcome, transfer));
 	// Posting to a worker before its module has loaded can block the caller (Bun), so the pool waits for this.

@@ -4,10 +4,7 @@ import type { CompressionTask, CompressionOutcome } from './compression-protocol
 export const startCompressionWorker = (
 	encode: (task: CompressionTask) => { bytes: Uint8Array; bitLength: number; crc: number }
 ): void => {
-	const scope = globalThis as unknown as {
-		onmessage: (event: { data: CompressionTask }) => void;
-		postMessage(result: CompressionOutcome | typeof WORKER_READY, transfer: ArrayBuffer[]): void;
-	};
+	const scope = globalThis;
 	scope.onmessage = ({ data: task }) => {
 		try {
 			const result = encode(task);
