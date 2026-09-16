@@ -2,13 +2,53 @@
 
 Dependency-free bzip2 compression and decompression for JavaScript, with WHATWG `TransformStream` APIs for files that should not be loaded entirely into memory.
 
-The package is ESM-only and requires Node.js 22.12 or newer. The stream APIs also work in modern runtimes that provide the standard Web Streams globals.
+The package is ESM-only and requires Node.js 22.12 or newer. The stream APIs also work in modern runtimes that provide the standard Web Streams globals. The main import and CLI use WebAssembly for decompression by default; compression uses JavaScript in every entry.
 
 ## Install
 
 ```sh
 npm install bzip2-codec
 ```
+
+## CLI
+
+```sh
+npx bzip2-codec compress input.txt -o input.txt.bz2
+npx bzip2-codec decompress input.txt.bz2 -o restored.txt
+npx bzip2-codec test input.txt.bz2
+cat input.txt | npx bzip2-codec compress -b 1 > input.txt.bz2
+bunx --bun bzip2-codec decompress input.txt.bz2 --backend wasm --concurrency auto -o restored.txt
+```
+
+`bzip2-codec compress|decompress|test [input]` accepts one input; omitted input or
+`-` reads stdin. Compression and decompression default to stdout; `-o`/`--output`
+selects a file or `-` for stdout. Binary output to a terminal is refused. `test`
+fully decodes and validates the input, discards output, and is silent on success.
+
+| Option                    | Commands                              | Default          |
+| ------------------------- | ------------------------------------- | ---------------- |
+| `-f`, `--force`           | compress/decompress, file output only | Refuse overwrite |
+| `-b`, `--block-size 1..9` | compress                              | `9`              |
+| `--backend js\|wasm`      | decompress/test                       | `wasm`           |
+| `--max-output-bytes N`    | decompress/test                       | Unlimited        |
+| `--concurrency N\|auto`   | decompress/test                       | `1`              |
+
+The byte limit must be a nonnegative safe integer; worker counts must be positive
+safe integers or `auto`. Without worker support (including Node.js), explicit
+counts greater than 1 warn on stderr and fall back to 1; `auto` falls back silently.
+Use `bunx --bun` for Bun workers. This CLI fallback does not change the library's
+strict concurrency validation. Unknown and inapplicable options are rejected.
+Use `--help`/`-h` globally or with a command, and `--version` for the package version.
+Use `--` before input paths beginning with a dash.
+
+Sources are never deleted, and input/output aliases of the same file are rejected.
+File output is written to a temporary sibling and published only after success;
+failures clean up the temporary file and preserve existing output. Without
+`--force`, publication cannot overwrite a file created concurrently. With
+`--force`, the output directory entry is replaced (an output symlink is replaced,
+not followed). Stdout cannot be rolled back and may contain partial output on an
+error. Errors go to stderr with codec error codes when available. Exit statuses
+are `0` for success, `1` for processing/I/O errors, and `2` for usage errors.
 
 ## Stream a large file
 
@@ -57,7 +97,7 @@ Unlike the stream APIs, `compress()` and `decompress()` necessarily collect the 
 
 ## WebAssembly decoder
 
-Import from `bzip2-codec/wasm` to use the optional WebAssembly decoder:
+The main `bzip2-codec` import uses the WebAssembly decoder. The explicit `bzip2-codec/wasm` import remains available with the same API and implementation:
 
 ```ts
 import { createDecompressionStream, decompress } from 'bzip2-codec/wasm';
@@ -70,13 +110,19 @@ await response.body.pipeThrough(createDecompressionStream({ concurrency: 2 })).p
 const decoded = decompress(compressedBytes);
 ```
 
-The subpath exports the same API as `bzip2-codec`. Compression uses JavaScript. WASM is embedded and initialized on first use; no extra assets or setup are needed. The main import stays JS-only.
+WASM is embedded and initialized on first use; no extra assets or setup are needed. To use the pure JavaScript decoder instead, import from `bzip2-codec/js`:
+
+```ts
+import { compress, decompress, createDecompressionStream } from 'bzip2-codec/js';
+```
+
+All three entries export the same functions, error class and types. The JS entry does not load WASM. For the CLI, select `--backend js` when needed. There is no automatic fallback when WebAssembly is unavailable.
 
 Node.js supports synchronous and single-threaded WASM decoding. For workers, use Bun, Deno or a browser and set `concurrency` to a number or `'auto'`.
 
 Each WASM instance uses 16 MiB of linear memory plus input/output buffers. WASM decoding buffers a complete block before emission. Set `maxOutputBytes` to limit expansion.
 
-For browser CSP, allow `script-src 'self' 'wasm-unsafe-eval'` and, when using workers, `worker-src 'self' blob:`. If WebAssembly is unavailable, use the main import.
+For browser CSP, allow `script-src 'self' 'wasm-unsafe-eval'` and, when using workers, `worker-src 'self' blob:`. If WebAssembly is unavailable or disallowed, use `bzip2-codec/js`.
 
 See [benchmark results](benchmark.md) and [WASM build instructions](wasm/README.md).
 

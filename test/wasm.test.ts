@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import * as js from '../src/index.ts';
+import * as js from '../src/js.ts';
 import * as wasm from '../src/wasm/index.ts';
 import { tryDecodeBlock } from '../src/wasm/block.ts';
 

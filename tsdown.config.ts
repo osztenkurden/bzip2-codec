@@ -15,7 +15,7 @@ const workers = new Map(
 );
 
 export default defineConfig({
-	entry: { index: 'src/index.ts', wasm: 'src/wasm/index.ts' },
+	entry: { index: 'src/index.ts', js: 'src/js.ts', wasm: 'src/wasm/index.ts', cli: 'src/cli.ts' },
 	dts: true,
 	plugins: [
 		{

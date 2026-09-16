@@ -8,10 +8,14 @@
 	},
 	"exports": {
 		".": "./dist/index.mjs",
+		"./js": "./dist/js.mjs",
 		"./package.json": "./package.json",
 		"./wasm": "./dist/wasm.mjs"
 	},
 	"types": "./dist/index.d.mts",
+	"bin": {
+		"bzip2-codec": "./dist/cli.mjs"
+	},
 	"files": [
 		"dist",
 		"LICENSE",
@@ -23,7 +27,7 @@
 		"test": "node --test",
 		"test:parallel": "bun test test/parallel.test.ts test/parallel-worker.test.ts test/wasm.test.ts",
 		"test:parallel:large": "BZIP_LARGE_TESTS=1 bun test --timeout 120000 test/parallel-large.test.ts",
-		"test:package": "BZIP_BUILT_TESTS=1 bun test test/package.test.ts",
+		"test:package": "BZIP_BUILT_TESTS=1 bun test --timeout 60000 test/package.test.ts test/cli.test.ts",
 		"test:interop": "BZIP_INTEROP_TESTS=1 node --test test/interoperability.test.ts",
 		"test:large": "BZIP_LARGE_TESTS=1 node --test test/large.test.ts",
 		"memory:decompress": "bun scripts/memory-report.ts",

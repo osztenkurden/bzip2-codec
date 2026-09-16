@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DecoderEngine, decodeNextBlock } from '../src/codec/decoder.ts';
-import { BzipError, compress, decompress } from '../src/index.ts';
+import { BzipError, compress, decompress } from '../src/js.ts';
 import { resolveDecompressOptions } from '../src/options.ts';
 import { decodeNextBlock as decodeWasmBlock } from '../src/wasm/decoder.ts';
 import { decompress as decompressWasm } from '../src/wasm/index.ts';

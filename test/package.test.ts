@@ -1,9 +1,40 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 const skip = process.env.BZIP_BUILT_TESTS !== '1';
 
-for (const entry of ['bzip2-codec', 'bzip2-codec/wasm']) {
+test('package entries default to WASM and share the public API', { skip }, async () => {
+	const main = await import('bzip2-codec');
+	const wasm = await import('bzip2-codec/wasm');
+	const js = await import('bzip2-codec/js');
+	assert.deepEqual(Object.keys(main).sort(), Object.keys(js).sort());
+	assert.deepEqual(main, wasm);
+	assert.notEqual(main.decompress, js.decompress);
+	assert.notEqual(main.createDecompressionStream, js.createDecompressionStream);
+	assert.equal(main.compress, js.compress);
+	assert.equal(main.createCompressionStream, js.createCompressionStream);
+	assert.equal(main.BzipError, js.BzipError);
+	const result = spawnSync(
+		process.execPath,
+		[
+			'--input-type=module',
+			'--eval',
+			`
+		globalThis.WebAssembly = undefined;
+		const { compress, decompress } = await import('bzip2-codec/js');
+		const input = new TextEncoder().encode('JS without WebAssembly');
+		const { default: assert } = await import('node:assert/strict');
+		assert.deepEqual(decompress(compress(input)), input);
+	`
+		],
+		{ encoding: 'utf8' }
+	);
+	assert.ifError(result.error);
+	assert.equal(result.status, 0, result.stderr);
+});
+
+for (const entry of ['bzip2-codec', 'bzip2-codec/js', 'bzip2-codec/wasm']) {
 	test(`${entry} loads its worker and decodes a member`, { skip }, async () => {
 		const { createDecompressionStream } = await import(entry);
 		const encoded = Buffer.from(
