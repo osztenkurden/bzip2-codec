@@ -9,17 +9,19 @@ Compare sections using the same input and measurement method.
 
 Measurement: preloaded input, download/file reads and SHA-256 validation excluded. Includes decoder startup, streaming and output buffering.
 
-Updated: 2026-09-14T14:32:18.197Z. linux x64, Bun 1.4.2; 16 auto workers/threads, bzip2 single-threaded.
-Revision: `7ecff0b593e5` (working tree has changes). 3 successful trial(s) per decoder. Source host: `replay187.valve.net`.
+Updated: 2026-09-16T16:33:26.385Z. linux x64, Bun 1.4.2; 16 hardware threads, codec auto concurrency 16. Explicit concurrency 1 and bzip2 runs are single-threaded.
+Revision: `45cd5e58def2`. 3 successful trial(s) per decoder. Source host: `replay187.valve.net`.
 Input: 220,127,546 compressed bytes → 321,837,400 output bytes.
 Input SHA-256: `ff3a48e9a72f338784023ad81291b87583058dbb1a47df1027799b35e3c7fe3d`. Output SHA-256: `8c79250cc0e4d90ae076a022c0802f312a6058f05beddcff65de883d16214f02`.
 
 | Decoder                  | Median time | Output throughput |  Observed range |
 | ------------------------ | ----------: | ----------------: | --------------: |
-| bzip2                    |    12.582 s |        25.58 MB/s | 12.559–12.680 s |
-| lbzip2                   |     0.849 s |       379.10 MB/s |   0.830–0.857 s |
-| bzip2-codec (JS, auto)   |     1.496 s |       215.19 MB/s |   1.461–1.522 s |
-| bzip2-codec (WASM, auto) |     0.988 s |       325.71 MB/s |   0.975–0.993 s |
+| bzip2                    |    12.910 s |        24.93 MB/s | 12.872–13.214 s |
+| bzip2-codec (JS, 1)      |     9.816 s |        32.79 MB/s |   9.619–9.898 s |
+| bzip2-codec (WASM, 1)    |     9.054 s |        35.55 MB/s |   9.027–9.149 s |
+| lbzip2                   |     0.889 s |       361.92 MB/s |   0.854–0.910 s |
+| bzip2-codec (JS, auto)   |     1.548 s |       207.87 MB/s |   1.521–1.609 s |
+| bzip2-codec (WASM, auto) |     1.055 s |       305.07 MB/s |   1.023–1.090 s |
 
 ## Apple M1
 
