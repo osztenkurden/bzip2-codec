@@ -304,3 +304,11 @@ See [Contributing](CONTRIBUTING.md) for worker, WASM, interoperability, and pack
 ## License
 
 [GPL-3.0](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
+
+Complete corresponding source, including the modified lbzip2 sources and build scripts,
+is available at no charge from [GitHub releases](https://github.com/osztenkurden/bzip2-codec/releases).
+For the version in the installed package's `package.json`, select tag `v<VERSION>`
+and download **Source code (tar.gz)** or **Source code (zip)**. The direct archive URL is
+`https://github.com/osztenkurden/bzip2-codec/archive/refs/tags/v<VERSION>.tar.gz`;
+replace `<VERSION>` with the full package version. Build instructions are in
+`CONTRIBUTING.md` and `wasm/README.md` inside that archive.

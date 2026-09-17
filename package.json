@@ -20,8 +20,7 @@
 		"dist",
 		"LICENSE",
 		"NOTICE",
-		"README.md",
-		"wasm"
+		"README.md"
 	],
 	"scripts": {
 		"test": "node --test",

@@ -16,6 +16,7 @@ jobs:
         runs-on: ubuntu-latest
         outputs:
             release_created: ${{ steps.release.outputs.release_created }}
+            tag_name: ${{ steps.release.outputs.tag_name }}
         steps:
             - id: release
               uses: googleapis/release-please-action@v5
@@ -30,15 +31,21 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v6
+              with:
+                  ref: ${{ needs.release-please.outputs.tag_name }}
             - uses: oven-sh/setup-bun@v2
             - uses: actions/setup-node@v6
               with:
                   node-version: 24
                   registry-url: https://registry.npmjs.org
+            - name: Verify source tag matches package version
+              env:
+                  RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+              run: node --input-type=module -e "import p from './package.json' with { type:'json' }; if (process.env.RELEASE_TAG !== 'v' + p.version) throw new Error('Release tag must match package version');"
             - run: bun install --frozen-lockfile
+            - run: bun run build
             - run: bun run typecheck
             - run: npm test
-            - run: bun run build
             - run: npm publish
               env:
                   NODE_AUTH_TOKEN: ''

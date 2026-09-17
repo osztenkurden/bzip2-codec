@@ -5,7 +5,9 @@ The main and `/wasm` entries embed [lbzip2 at revision 724352c](https://github.c
 without SIMD; other vendored files are unmodified.
 
 Upstream copyright notices and [GPL-3.0-or-later](vendor/COPYING) are retained.
-The C adapters are GPL-3.0. This directory ships in npm packages as corresponding source.
+The C adapters are GPL-3.0. This directory is included in the corresponding source
+archive for each GitHub release, rather than in the npm package. See [NOTICE](../NOTICE)
+for instructions to obtain the source matching an npm package version.
 
 ## Rebuild
 

@@ -20,10 +20,18 @@ The default and bzip2-codec/wasm entries embed WebAssembly builds of the lbzip2
 encoder and decoder:
 
   Copyright (C) 2011, 2012, 2013, 2014 Mikolaj Izdebski
-  Additional notices are retained in wasm/vendor/.
+  Additional notices are retained in wasm/vendor/ in the corresponding source.
 
 lbzip2 is distributed under GPL version 3 or, at your option, any later version.
-The pinned source, freestanding adapter, build script and full license are
-included in wasm/. See wasm/README.md and wasm/vendor/COPYING.
+Complete corresponding source is available at no charge on GitHub. For the
+version in this package's package.json, use tag v<VERSION>:
+
+  https://github.com/osztenkurden/bzip2-codec/releases/tag/v<VERSION>
+  https://github.com/osztenkurden/bzip2-codec/archive/refs/tags/v<VERSION>.tar.gz
+
+Replace <VERSION> with the full package version (for example, 1.3.1).
+The archive includes the TypeScript sources, modified lbzip2 C sources,
+freestanding adapters, headers, build scripts and licenses. See wasm/README.md
+for WASM build instructions and wasm/vendor/COPYING for the upstream license.
 The local WASM word-at-a-time MTF optimization in wasm/vendor/encode.c is
 identified with its modification date in that file.
