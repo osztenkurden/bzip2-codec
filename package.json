@@ -2,6 +2,7 @@
 	"name": "bzip2-codec",
 	"version": "2.0.0",
 	"description": "Dependency-free bzip2 compression and decompression for Web Streams",
+	"author": "Hubert Walczak <hubertwalczak8@gmail.com> (https://hwalczak.com/)",
 	"type": "module",
 	"engines": {
 		"node": ">=22.12.0"
