@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.0.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.3.1...v2.0.0) (2026-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* the main import now requires WebAssembly for decoding. Use bzip2-codec/js in environments without WebAssembly support.
+
+### Features
+
+* add CLI and default decompression to WASM ([#12](https://github.com/osztenkurden/bzip2-codec/issues/12)) ([0bc5689](https://github.com/osztenkurden/bzip2-codec/commit/0bc5689475755a3805796683935a245b14caa6fe))
+
+
+### Bug Fixes
+
+* fail on malformed input ([f310631](https://github.com/osztenkurden/bzip2-codec/commit/f31063149d8774df4ed6addbd070251a3cc52300))
+
 ## [1.3.1](https://github.com/osztenkurden/bzip2-codec/compare/v1.3.0...v1.3.1) (2026-09-14)
 
 
