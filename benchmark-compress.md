@@ -13,18 +13,21 @@ decimal MB/s. See [Contributing](CONTRIBUTING.md#compression) for benchmark opti
 
 ## AMD Ryzen 7 5800X 8-Core Processor
 
-Updated: 2026-09-16T22:40:42.165Z. linux x64, Bun 1.4.2; 16 logical CPUs; codec auto concurrency 16.
-Revision: `fd2e390e0922` (working tree has changes). 1 successful trial(s) per encoder; block size 9.
+Updated: 2026-09-17T16:49:30.141Z. linux x64, Bun 1.4.2; 16 logical CPUs; codec auto concurrency 16.
+Revision: `89f875e603b9`. 3 successful trial(s) per encoder; block size 9.
 Measurement: compression-preloaded-input-v1. Input: 321,837,400 bytes. SHA-256: `8c79250cc0e4d90ae076a022c0802f312a6058f05beddcff65de883d16214f02`.
+Every output was decoded and checked against the input outside the timed region. Compressed bytes may differ between encoders.
+For each library backend, compressed hashes also matched across concurrency settings and rounds.
+Compressed size is the median; size/input is smaller for better compression. Throughput uses decimal MB of uncompressed input.
 
 | Encoder                  | Median time | Input throughput | Compressed bytes | Size/input |  Observed range |
 | ------------------------ | ----------: | ---------------: | ---------------: | ---------: | --------------: |
-| bzip2                    |    16.431 s |       19.59 MB/s |      220,127,546 |     68.40% | 16.431–16.431 s |
-| bzip2-codec (JS, 1)      |    84.561 s |        3.81 MB/s |      220,191,521 |     68.42% | 84.561–84.561 s |
-| bzip2-codec (WASM, 1)    |    16.791 s |       19.17 MB/s |      220,010,648 |     68.36% | 16.791–16.791 s |
-| lbzip2 (all CPUs)        |     1.841 s |      174.79 MB/s |      220,023,656 |     68.36% |   1.841–1.841 s |
-| bzip2-codec (JS, auto)   |    45.258 s |        7.11 MB/s |      220,191,521 |     68.42% | 45.258–45.258 s |
-| bzip2-codec (WASM, auto) |     2.733 s |      117.75 MB/s |      220,010,648 |     68.36% |   2.733–2.733 s |
+| bzip2                    |    16.805 s |       19.15 MB/s |      220,127,546 |     68.40% | 16.757–16.838 s |
+| bzip2-codec (JS, 1)      |    23.303 s |       13.81 MB/s |      220,191,521 |     68.42% | 22.718–23.562 s |
+| bzip2-codec (WASM, 1)    |    15.213 s |       21.16 MB/s |      220,010,648 |     68.36% | 15.209–15.225 s |
+| lbzip2 (all CPUs)        |     1.732 s |      185.87 MB/s |      220,023,656 |     68.36% |   1.718–1.760 s |
+| bzip2-codec (JS, auto)   |     5.869 s |       54.84 MB/s |      220,191,521 |     68.42% |   5.769–5.946 s |
+| bzip2-codec (WASM, auto) |     2.277 s |      141.37 MB/s |      220,010,648 |     68.36% |   2.258–2.299 s |
 
 ## Apple M1
 
