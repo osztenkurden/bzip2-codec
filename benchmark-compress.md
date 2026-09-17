@@ -1,8 +1,9 @@
 # Compression benchmarks
 
-Run `bun run benchmark:compress <uncompressed-file> [rounds]` to update this machine's CPU section.
+Run `bun run benchmark:compress [uncompressed-file] [rounds]` to update this machine's CPU section.
+With no file, the default replay is downloaded and decompressed as needed before timing.
 Timings include startup, streaming and output collection, plus process startup and
-pipes for native tools. Input loading, hashing and round-trip checks are excluded.
+pipes for native tools. Input preparation, loading, hashing and round-trip checks are excluded.
 JS/WASM run with concurrency 1 and auto; bzip2 uses one core and lbzip2 all logical
 CPUs. Compare the same input and block size. Outputs are round-trip verified, and
 single/auto compressed hashes must match within each library backend.

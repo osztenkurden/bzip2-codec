@@ -39,24 +39,30 @@ in an adjacent `.md.json` file. Failed validation leaves the Markdown unchanged.
 ### Compression
 
 ```sh
+bun run benchmark:compress                       # default replay, three rounds
 bun run benchmark:compress ./uncompressed-file 3
 ```
 
-Builds the package and reads an **uncompressed local file**. Results go to
+Builds the package and benchmarks an **uncompressed file**. With no file argument,
+uses the same replay as `benchmark.ts`: prefers its raw file in the repository
+root, then a local `.bz2`, otherwise downloads it. Decompression and downloads
+happen before timing; temporary files are removed afterward. Results go to
 [benchmark-compress.md](benchmark-compress.md): median time, throughput, compressed
 size, size/input ratio and timing range. Every archive must round-trip to the
 original input. Single/auto compressed hashes must match within each backend;
 JS and WASM may produce different archives.
 
-| Environment variable       | Default                                     |
-| -------------------------- | ------------------------------------------- |
-| `BZIP_COMPRESS_FILE`       | Required unless a path argument is supplied |
-| `BZIP_COMPRESS_RUNS`       | `3`                                         |
-| `BZIP_COMPRESS_BLOCK_SIZE` | `9` (accepts `1`–`9`)                       |
-| `BZIP_COMPRESS_TIMEOUT_MS` | `1800000` per trial, including validation   |
-| `BZIP_COMPRESS_REPORT`     | `benchmark-compress.md`                     |
+| Environment variable       | Default                                               |
+| -------------------------- | ----------------------------------------------------- |
+| `BZIP_COMPRESS_FILE`       | Default replay                                        |
+| `BZIP_COMPRESS_URL`        | Same replay archive URL as `benchmark.ts`             |
+| `BZIP_COMPRESS_RUNS`       | `3`                                                   |
+| `BZIP_COMPRESS_BLOCK_SIZE` | `9` (accepts `1`–`9`)                                 |
+| `BZIP_COMPRESS_TIMEOUT_MS` | `1800000` per preparation/trial, including validation |
+| `BZIP_COMPRESS_REPORT`     | `benchmark-compress.md`                               |
 
-Command-line file and round count override environment values.
+Command-line file and round count override environment values. Use
+`BZIP_COMPRESS_RUNS=5 bun run benchmark:compress` to change rounds with default input.
 
 For focused encoder profiling and deterministic generated-data comparisons:
 

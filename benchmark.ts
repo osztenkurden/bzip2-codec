@@ -8,10 +8,11 @@ import { pipeline } from 'node:stream/promises';
 import { spawnSync } from 'node:child_process';
 import { spawnProcess } from './scripts/benchmark/process.ts';
 import { fetchIPv4 } from './scripts/benchmark/fetch-ipv4.ts';
+import { DEFAULT_REPLAY_URL } from './scripts/benchmark/input.ts';
 import { median, REPORT_INTRO, updateCpuSection } from './scripts/benchmark/report.ts';
 
 const repository = import.meta.dirname;
-const defaultUrl = 'http://replay187.valve.net/730/003842189672549712349_0179118028.dem.bz2';
+const defaultUrl = DEFAULT_REPLAY_URL;
 const isHttp = (value: string) => /^https?:\/\//i.test(value);
 const source = process.argv[2];
 const url = source !== undefined && isHttp(source) ? source : (process.env.BZIP_BENCHMARK_URL ?? defaultUrl);

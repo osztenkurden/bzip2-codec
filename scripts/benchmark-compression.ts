@@ -1,5 +1,5 @@
 import { cpus, platform, arch } from 'node:os';
-import { readFile, writeFile, stat, rename, rm } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -7,12 +7,10 @@ import { format } from 'prettier';
 import { spawnProcess } from './benchmark/process.ts';
 import { resolveHardwareConcurrency, supportsWorkers } from '../src/parallel/pool.ts';
 import { median, updateCpuSection } from './benchmark/report.ts';
+import { prepareCompressionInput } from './benchmark/input.ts';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const source = process.argv[2] ?? process.env.BZIP_COMPRESS_FILE;
-if (!source) throw new Error('Usage: bun run benchmark:compress <uncompressed-file> [rounds]');
-const inputPath = resolve(source);
-if (!(await stat(inputPath)).isFile()) throw new Error(`Not a file: ${inputPath}`);
 const integer = (value: string, name: string, maximum = Number.MAX_SAFE_INTEGER) => {
 	const result = Number(value);
 	if (!Number.isSafeInteger(result) || result < 1 || result > maximum)
@@ -24,7 +22,6 @@ const blockSize = integer(process.env.BZIP_COMPRESS_BLOCK_SIZE ?? '9', 'Block si
 const timeoutMs = integer(process.env.BZIP_COMPRESS_TIMEOUT_MS ?? '1800000', 'Timeout');
 const reportPath = resolve(process.env.BZIP_COMPRESS_REPORT ?? join(repository, 'benchmark-compress.md'));
 const rawPath = `${reportPath}.json`;
-if (inputPath === reportPath || inputPath === rawPath) throw new Error('Input and report paths must differ');
 const cpu = (cpus()[0]?.model ?? `${platform()} ${arch()} CPU`).replace(/\s+/g, ' ').trim();
 const workers = Math.max(1, cpus().length);
 const autoConcurrency = supportsWorkers() ? resolveHardwareConcurrency() : 1;
@@ -64,120 +61,126 @@ const cases: Case[] = [
 	{ name: 'bzip2-codec (WASM, auto)', mode: 'js', entry: 'wasm', concurrency: 'auto', available: true }
 ];
 console.log(`CPU: ${cpu}; ${rounds} rounds; block size ${blockSize}.`);
-await command([process.execPath, fileURLToPath(import.meta.resolve('tsdown/run'))]);
-const metadata = {
-	measurement: 'compression-preloaded-input-v1',
-	cpu,
-	logicalCpus: workers,
-	autoConcurrency,
-	runtime: process.versions.bun ?? process.versions.node,
-	platform: platform(),
-	arch: arch(),
-	revision: await command(['git', 'rev-parse', 'HEAD']),
-	dirty: Boolean(await command(['git', 'status', '--porcelain'])),
-	inputPath,
-	rounds,
-	blockSize,
-	cases
-};
-const attempts: object[] = [];
-const saveRaw = (complete: boolean) =>
-	writeFile(rawPath, JSON.stringify({ ...metadata, complete, attempts }, null, '\t') + '\n');
-await saveRaw(false);
-const results = new Map<string, Result[]>();
-const codecHashes = new Map<string, string>();
-let reference: Result | undefined;
-const available = cases.filter(c => c.available);
-for (let round = 1; round <= rounds; round++) {
-	const shift = (round - 1) % available.length;
-	const order = [...available.slice(shift), ...available.slice(0, shift)];
-	for (const c of round % 2 ? order : order.reverse()) {
-		console.log(`${c.name}: round ${round}/${rounds}`);
-		const child = spawnProcess(
-			[process.execPath, ...process.execArgv, join(repository, 'scripts/benchmark/trial.ts')],
-			{
-				stdin: 'pipe',
-				stdout: 'pipe',
-				stderr: 'pipe'
-			}
-		);
-		const watchdog = setTimeout(() => child.kill(), timeoutMs + 10000);
-		let result: Result;
-		try {
-			await child.stdin.write(
-				JSON.stringify({
-					inputPath,
-					bundle: join(repository, `dist/${c.entry ?? 'js'}.mjs`),
-					operation: 'compress',
-					mode: c.mode,
-					concurrency: c.concurrency,
-					blockSize,
-					timeoutMs
-				})
+const prepared = await prepareCompressionInput({ source, repository, url: process.env.BZIP_COMPRESS_URL, timeoutMs });
+try {
+	const { inputPath } = prepared;
+	if (inputPath === reportPath || inputPath === rawPath) throw new Error('Input and report paths must differ');
+	await command([process.execPath, fileURLToPath(import.meta.resolve('tsdown/run'))]);
+	const metadata = {
+		measurement: 'compression-preloaded-input-v1',
+		cpu,
+		logicalCpus: workers,
+		autoConcurrency,
+		runtime: process.versions.bun ?? process.versions.node,
+		platform: platform(),
+		arch: arch(),
+		revision: await command(['git', 'rev-parse', 'HEAD']),
+		dirty: Boolean(await command(['git', 'status', '--porcelain'])),
+		inputPath,
+		inputSource: prepared.source,
+		rounds,
+		blockSize,
+		cases
+	};
+	const attempts: object[] = [];
+	const saveRaw = (complete: boolean) =>
+		writeFile(rawPath, JSON.stringify({ ...metadata, complete, attempts }, null, '\t') + '\n');
+	await saveRaw(false);
+	const results = new Map<string, Result[]>();
+	const codecHashes = new Map<string, string>();
+	let reference: Result | undefined;
+	const available = cases.filter(c => c.available);
+	for (let round = 1; round <= rounds; round++) {
+		const shift = (round - 1) % available.length;
+		const order = [...available.slice(shift), ...available.slice(0, shift)];
+		for (const c of round % 2 ? order : order.reverse()) {
+			console.log(`${c.name}: round ${round}/${rounds}`);
+			const child = spawnProcess(
+				[process.execPath, ...process.execArgv, join(repository, 'scripts/benchmark/trial.ts')],
+				{
+					stdin: 'pipe',
+					stdout: 'pipe',
+					stderr: 'pipe'
+				}
 			);
-			await child.stdin.end();
-			const [stdout, stderr, code] = await Promise.all([
-				new Response(child.stdout).text(),
-				new Response(child.stderr).text(),
-				child.exited
-			]);
-			if (code !== 0) throw new Error(`Trial exited ${code}: ${stderr}`);
-			result = JSON.parse(stdout) as Result;
-			if (
-				!Number.isFinite(result.durationMs) ||
-				result.durationMs <= 0 ||
-				!Number.isSafeInteger(result.outputBytes) ||
-				result.outputBytes < 1 ||
-				result.decodedBytes !== result.inputBytes ||
-				result.decodedSha256 !== result.inputSha256 ||
-				(reference &&
-					(result.inputBytes !== reference.inputBytes || result.inputSha256 !== reference.inputSha256))
-			)
-				throw new Error('Input changed or compressed output failed round-trip validation');
-			if (c.mode === 'js') {
-				const key = c.entry ?? 'js';
-				const previous = codecHashes.get(key);
-				if (previous !== undefined && previous !== result.sha256)
-					throw new Error(`${key} compressed bytes differ across scheduling modes or rounds`);
-				codecHashes.set(key, result.sha256);
+			const watchdog = setTimeout(() => child.kill(), timeoutMs + 10000);
+			let result: Result;
+			try {
+				await child.stdin.write(
+					JSON.stringify({
+						inputPath,
+						bundle: join(repository, `dist/${c.entry ?? 'js'}.mjs`),
+						operation: 'compress',
+						mode: c.mode,
+						concurrency: c.concurrency,
+						blockSize,
+						timeoutMs
+					})
+				);
+				await child.stdin.end();
+				const [stdout, stderr, code] = await Promise.all([
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+					child.exited
+				]);
+				if (code !== 0) throw new Error(`Trial exited ${code}: ${stderr}`);
+				result = JSON.parse(stdout) as Result;
+				if (
+					!Number.isFinite(result.durationMs) ||
+					result.durationMs <= 0 ||
+					!Number.isSafeInteger(result.outputBytes) ||
+					result.outputBytes < 1 ||
+					result.decodedBytes !== result.inputBytes ||
+					result.decodedSha256 !== result.inputSha256 ||
+					(reference &&
+						(result.inputBytes !== reference.inputBytes || result.inputSha256 !== reference.inputSha256))
+				)
+					throw new Error('Input changed or compressed output failed round-trip validation');
+				if (c.mode === 'js') {
+					const key = c.entry ?? 'js';
+					const previous = codecHashes.get(key);
+					if (previous !== undefined && previous !== result.sha256)
+						throw new Error(`${key} compressed bytes differ across scheduling modes or rounds`);
+					codecHashes.set(key, result.sha256);
+				}
+			} catch (error) {
+				attempts.push({ name: c.name, round, failed: true, error: String(error) });
+				await saveRaw(false);
+				throw new Error(`${c.name}: ${error}. Existing Markdown was not changed. Details: ${rawPath}`);
+			} finally {
+				clearTimeout(watchdog);
+				if (child.exitCode === null) {
+					child.kill();
+					await child.exited;
+				}
 			}
-		} catch (error) {
-			attempts.push({ name: c.name, round, failed: true, error: String(error) });
+			reference ??= result;
+			attempts.push({ name: c.name, round, ...result });
 			await saveRaw(false);
-			throw new Error(`${c.name}: ${error}. Existing Markdown was not changed. Details: ${rawPath}`);
-		} finally {
-			clearTimeout(watchdog);
-			if (child.exitCode === null) {
-				child.kill();
-				await child.exited;
-			}
+			const rows = results.get(c.name) ?? [];
+			rows.push(result);
+			results.set(c.name, rows);
+			console.log(`  ${(result.durationMs / 1000).toFixed(3)} s; ${result.outputBytes} compressed bytes`);
 		}
-		reference ??= result;
-		attempts.push({ name: c.name, round, ...result });
-		await saveRaw(false);
-		const rows = results.get(c.name) ?? [];
-		rows.push(result);
-		results.set(c.name, rows);
-		console.log(`  ${(result.durationMs / 1000).toFixed(3)} s; ${result.outputBytes} compressed bytes`);
 	}
-}
-const table = cases.map(c => {
-	const rows = results.get(c.name);
-	if (!rows) return `| ${c.name} | Not installed | — | — | — | — |`;
-	const times = rows.map(r => r.durationMs);
-	const middle = median(times);
-	const size = median(rows.map(r => r.outputBytes));
-	const ratio = reference!.inputBytes ? `${((100 * size) / reference!.inputBytes).toFixed(2)}%` : '—';
-	return `| ${c.name} | ${(middle / 1000).toFixed(3)} s | ${(reference!.inputBytes / middle / 1000).toFixed(2)} MB/s | ${size.toLocaleString('en-US')} | ${ratio} | ${(Math.min(...times) / 1000).toFixed(3)}–${(Math.max(...times) / 1000).toFixed(3)} s |`;
-});
-const intro = `# Compression benchmarks
+	const table = cases.map(c => {
+		const rows = results.get(c.name);
+		if (!rows) return `| ${c.name} | Not installed | — | — | — | — |`;
+		const times = rows.map(r => r.durationMs);
+		const middle = median(times);
+		const size = median(rows.map(r => r.outputBytes));
+		const ratio = reference!.inputBytes ? `${((100 * size) / reference!.inputBytes).toFixed(2)}%` : '—';
+		return `| ${c.name} | ${(middle / 1000).toFixed(3)} s | ${(reference!.inputBytes / middle / 1000).toFixed(2)} MB/s | ${size.toLocaleString('en-US')} | ${ratio} | ${(Math.min(...times) / 1000).toFixed(3)}–${(Math.max(...times) / 1000).toFixed(3)} s |`;
+	});
+	const intro = `# Compression benchmarks
 
-Run \`bun run benchmark:compress <uncompressed-file> [rounds]\` to update this machine's CPU section.
-Input is preloaded; file reads, hashing and round-trip validation are excluded from timings.
+Run \`bun run benchmark:compress [uncompressed-file] [rounds]\` to update this machine's CPU section.
+Without a file, the default replay is downloaded and decompressed as needed before timing.
+Input is preloaded; preparation, file reads, hashing and round-trip validation are excluded from timings.
 Times include encoder startup, streaming and output buffering. Native trials also include process startup and pipes.
 JS and WASM run with concurrency 1 and auto; bzip2 is the single-core reference and lbzip2 uses all logical CPUs. Compare results using the same input and block size.
 `;
-const section = `## ${cpu}
+	const section = `## ${cpu}
 
 Updated: ${new Date().toISOString()}. ${platform()} ${arch()}, ${process.versions.bun ? 'Bun' : 'Node.js'} ${metadata.runtime}; ${workers} logical CPUs; codec auto concurrency ${autoConcurrency}.
 Revision: \`${metadata.revision.slice(0, 12)}\`${metadata.dirty ? ' (working tree has changes)' : ''}. ${rounds} successful trial(s) per encoder; block size ${blockSize}.
@@ -190,19 +193,22 @@ Compressed size is the median; size/input is smaller for better compression. Thr
 | --- | ---: | ---: | ---: | ---: | ---: |
 ${table.join('\n')}
 `;
-const old = await readFile(reportPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
-	if (error.code === 'ENOENT') return intro;
-	throw error;
-});
-const temporary = join(dirname(reportPath), `.benchmark-compress-${process.pid}-${Date.now()}.tmp`);
-try {
-	await writeFile(
-		temporary,
-		updateCpuSection(old, cpu, await format(section, { parser: 'markdown', printWidth: 120 }))
-	);
-	await rename(temporary, reportPath);
+	const old = await readFile(reportPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+		if (error.code === 'ENOENT') return intro;
+		throw error;
+	});
+	const temporary = join(dirname(reportPath), `.benchmark-compress-${process.pid}-${Date.now()}.tmp`);
+	try {
+		await writeFile(
+			temporary,
+			updateCpuSection(old, cpu, await format(section, { parser: 'markdown', printWidth: 120 }))
+		);
+		await rename(temporary, reportPath);
+	} finally {
+		await rm(temporary, { force: true });
+	}
+	await saveRaw(true);
+	console.log(`Updated ${reportPath}; raw trials saved to ${rawPath}`);
 } finally {
-	await rm(temporary, { force: true });
+	await prepared.cleanup();
 }
-await saveRaw(true);
-console.log(`Updated ${reportPath}; raw trials saved to ${rawPath}`);
