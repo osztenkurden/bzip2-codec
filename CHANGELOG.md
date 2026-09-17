@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/osztenkurden/bzip2-codec/compare/v2.0.0...v2.0.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* improve tree shaking and deduplicate embedded WASM ([5976c77](https://github.com/osztenkurden/bzip2-codec/commit/5976c77d7b22267775da2a84590549a260bc1c20))
+
 ## [2.0.0](https://github.com/osztenkurden/bzip2-codec/compare/v1.3.1...v2.0.0) (2026-09-17)
 
 
