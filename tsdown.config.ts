@@ -57,10 +57,11 @@ export default defineConfig({
 					if (
 						output.length !== 1 ||
 						chunk?.type !== 'chunk' ||
+						chunk.code.trim().length === 0 ||
 						chunk.imports.length > 0 ||
 						chunk.dynamicImports.length > 0
 					) {
-						throw new Error('The inline worker must be a single script without external imports');
+						throw new Error('The inline worker must be a single non-empty script without external imports');
 					}
 					for (const module of Object.keys(chunk.modules)) this.addWatchFile(module);
 					return `export const WORKER_SOURCE = ${JSON.stringify(chunk.code)};`;
