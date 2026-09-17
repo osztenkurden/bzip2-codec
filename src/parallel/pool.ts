@@ -28,7 +28,7 @@ interface WorkerCallbacks<Outcome> {
 }
 
 export const resolveHardwareConcurrency = (): number => {
-	const reported = (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator?.hardwareConcurrency;
+	const reported = globalThis.navigator?.hardwareConcurrency;
 	return typeof reported === 'number' && reported >= 1 ? Math.floor(reported) : 4;
 };
 
@@ -141,9 +141,9 @@ export class WorkerPool<
 	}
 
 	#spawn(): void {
-		const slot: Slot<Task> = { worker: undefined as unknown as WorkerHandle<Task>, ready: false, busy: false };
+		let slot: Slot<Task>;
 		try {
-			slot.worker = createWorker<Task, Outcome>(
+			const worker = createWorker<Task, Outcome>(
 				{
 					onMessage: message => {
 						if (message === WORKER_READY) {
@@ -164,6 +164,7 @@ export class WorkerPool<
 				},
 				this.#definition
 			);
+			slot = { worker, ready: false, busy: false };
 			this.#slots.push(slot);
 		} catch (error) {
 			this.#fail(error);

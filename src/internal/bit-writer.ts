@@ -32,8 +32,18 @@ export class BitWriter {
 			throw new RangeError('Bit writes must contain between 0 and 32 bits');
 		}
 
-		for (let shift = count - 1; shift >= 0; shift--) {
-			this.writeBit(Math.floor(value / 2 ** shift) & 1);
+		// Consume at most eight bits at a time, including 32-bit CRC writes.
+		// No shift by 32 (which JavaScript would interpret as a shift by zero).
+		while (count > 0) {
+			const take = Math.min(8 - this.#partialBits, count);
+			count -= take;
+			this.#partialByte = (this.#partialByte << take) | ((value >>> count) & ((1 << take) - 1));
+			this.#partialBits += take;
+			if (this.#partialBits === 8) {
+				this.#writeCompleteByte(this.#partialByte);
+				this.#partialByte = 0;
+				this.#partialBits = 0;
+			}
 		}
 	}
 
@@ -63,11 +73,22 @@ export class BitWriter {
 		} else {
 			const shift = this.#partialBits,
 				mask = (1 << shift) - 1;
-			for (let offset = 0; offset < whole; offset++) {
-				const byte = bytes[offset]!;
-				this.#writeCompleteByte((this.#partialByte << (8 - shift)) | (byte >>> shift));
-				this.#partialByte = byte & mask;
+			let partial = this.#partialByte;
+			let offset = 0;
+			while (offset < whole) {
+				const count = Math.min(whole - offset, this.#buffer.length - this.#length);
+				const end = offset + count;
+				let destination = this.#length;
+				while (offset < end) {
+					const byte = bytes[offset++]!;
+					this.#buffer[destination++] = (partial << (8 - shift)) | (byte >>> shift);
+					partial = byte & mask;
+				}
+				this.#length = destination;
+				this.#completeBytes += count;
+				if (destination === this.#buffer.length) this.flush();
 			}
+			this.#partialByte = partial;
 		}
 		const tail = bitLength & 7;
 		if (tail) this.writeBits(tail, bytes[whole]! >>> (8 - tail));

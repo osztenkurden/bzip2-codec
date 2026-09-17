@@ -3,6 +3,7 @@ import { ParallelDecoderEngine } from '../parallel/engine.ts';
 import type { WorkerDefinition } from '../parallel/pool.ts';
 import { concatChunks } from './chunks.ts';
 import { transformBuffer } from './async-buffer.ts';
+import { CancellableTransform } from './cancellable-transform.ts';
 import { resolveDecompressionStreamOptions, resolveDecompressOptions } from '../options.ts';
 import type { DecompressionStreamOptions, DecompressOptions, ResolvedDecompressOptions } from '../types.ts';
 
@@ -33,8 +34,7 @@ export const createDecompressionFunctions = (
 
 		if (concurrency > 1) {
 			let engine!: ParallelDecoderEngine;
-			// `cancel` is a newer Transformer hook; the lib typings predate it.
-			const transformer: Transformer<Uint8Array, Uint8Array> & { cancel(): void } = {
+			const transformer: Transformer<Uint8Array, Uint8Array> = {
 				start(controller) {
 					engine = new ParallelDecoderEngine(
 						decoderOptions,
@@ -51,12 +51,9 @@ export const createDecompressionFunctions = (
 				},
 				flush() {
 					return engine.finish();
-				},
-				cancel() {
-					engine.close();
 				}
 			};
-			return new TransformStream<Uint8Array, Uint8Array>(transformer);
+			return new CancellableTransform(transformer, () => engine.close());
 		}
 
 		const decoder = createDecoder(decoderOptions);

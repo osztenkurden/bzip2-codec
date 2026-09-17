@@ -23,13 +23,20 @@ const encodeMoveToFront = (
 	const alphabetSize = used.reduce((count, value) => count + value, 0);
 	const endOfBlock = alphabetSize + 1;
 	const encoded = new Uint16Array(lastColumn.length + 1);
-	const order = new Uint8Array(alphabetSize);
-	const positions = new Uint8Array(256);
+	// The decoder's drifting 16-byte rows also bound forward MTF work: move
+	// at most 15 entries within a row and one boundary entry per preceding row.
+	// Track physical positions and row membership instead of updating 255 ranks.
+	const order = new Uint8Array(4096);
+	const bases = new Int32Array(16);
+	const positions = new Int32Array(256);
+	const rows = new Uint8Array(256);
+	for (let row = 0; row < 16; row++) bases[row] = 3840 + row * 16;
 
 	for (let byte = 0, index = 0; byte < 256; byte++) {
 		if (used[byte] === 0) continue;
-		order[index] = byte;
-		positions[byte] = index++;
+		order[3840 + index] = byte;
+		positions[byte] = 3840 + index;
+		rows[byte] = index++ >>> 4;
 	}
 
 	let outputLength = 0;
@@ -52,20 +59,43 @@ const encodeMoveToFront = (
 		}
 	};
 
-	for (const byte of lastColumn) {
-		const position = positions[byte]!;
-
-		for (let index = position; index > 0; index--) {
-			const moved = order[index - 1]!;
-			order[index] = moved;
-			positions[moved] = index;
-		}
-		order[0] = byte;
-		positions[byte] = 0;
-
-		if (position === 0) {
+	for (let offset = 0; offset < lastColumn.length; offset++) {
+		const byte = lastColumn[offset]!;
+		if (order[bases[0]!] === byte) {
 			zeroRunLength++;
 		} else {
+			let row = rows[byte]!;
+			const base = bases[row]!;
+			let slot = positions[byte]!;
+			const position = row * 16 + slot - base;
+			while (slot > base) {
+				const moved = order[slot - 1]!;
+				order[slot] = moved;
+				positions[moved] = slot--;
+			}
+			bases[row] = base + 1;
+			while (row > 0) {
+				const destination = --bases[row]!;
+				const moved = order[bases[row - 1]! + 15]!;
+				order[destination] = moved;
+				positions[moved] = destination;
+				rows[moved] = row--;
+			}
+			const front = --bases[0]!;
+			order[front] = byte;
+			positions[byte] = front;
+			rows[byte] = 0;
+			if (front === 0) {
+				for (let row = 15; row >= 0; row--) {
+					for (let column = 15; column >= 0; column--) {
+						const moved = order[bases[row]! + column]!;
+						const destination = 3840 + row * 16 + column;
+						order[destination] = moved;
+						positions[moved] = destination;
+					}
+					bases[row] = 3840 + row * 16;
+				}
+			}
 			emitZeroRun();
 			emit(position + 1);
 		}
@@ -118,12 +148,6 @@ const chooseGroupCount = (symbolCount: number): number => {
 	return 2;
 };
 
-const tableCost = (table: HuffmanEncodingTable, symbols: Uint16Array, start: number, end: number): number => {
-	let cost = 0;
-	for (let index = start; index < end; index++) cost += table.lengths[symbols[index]!]!;
-	return cost;
-};
-
 const optimizeHuffmanTables = (
 	symbols: Uint16Array,
 	alphabetSize: number
@@ -147,15 +171,41 @@ const optimizeHuffmanTables = (
 
 	for (let iteration = 0; iteration < 4; iteration++) {
 		const groupFrequencies = Array.from({ length: groupCount }, () => new Uint32Array(alphabetSize));
+		// Two 16-bit costs per word. A group has at most 50 * 20 bits, so
+		// additions cannot carry between lanes (the same idea as lbzip2's packed costs).
+		const costs01 = new Uint32Array(alphabetSize);
+		const costs23 = new Uint32Array(alphabetSize);
+		const costs45 = new Uint32Array(alphabetSize);
+		for (let symbol = 0; symbol < alphabetSize; symbol++) {
+			costs01[symbol] = tables[0]!.lengths[symbol]! | (tables[1]!.lengths[symbol]! << 16);
+			costs23[symbol] = (tables[2]?.lengths[symbol] ?? 0) | ((tables[3]?.lengths[symbol] ?? 0) << 16);
+			costs45[symbol] = (tables[4]?.lengths[symbol] ?? 0) | ((tables[5]?.lengths[symbol] ?? 0) << 16);
+		}
+		const costs = new Uint16Array(6);
 
 		for (let selector = 0; selector < selectorCount; selector++) {
 			const start = selector * HUFFMAN_GROUP_SIZE;
 			const end = Math.min(start + HUFFMAN_GROUP_SIZE, symbols.length);
+			let c01 = 0,
+				c23 = 0,
+				c45 = 0;
+			for (let index = start; index < end; index++) {
+				const symbol = symbols[index]!;
+				c01 += costs01[symbol]!;
+				c23 += costs23[symbol]!;
+				c45 += costs45[symbol]!;
+			}
+			costs[0] = c01 & 0xffff;
+			costs[1] = c01 >>> 16;
+			costs[2] = c23 & 0xffff;
+			costs[3] = c23 >>> 16;
+			costs[4] = c45 & 0xffff;
+			costs[5] = c45 >>> 16;
 			let bestGroup = 0;
-			let bestCost = tableCost(tables[0]!, symbols, start, end);
+			let bestCost = costs[0]!;
 
 			for (let group = 1; group < groupCount; group++) {
-				const cost = tableCost(tables[group]!, symbols, start, end);
+				const cost = costs[group]!;
 				if (cost < bestCost) {
 					bestGroup = group;
 					bestCost = cost;
@@ -194,7 +244,7 @@ const emitSelectors = (writer: BitWriter, selectors: Uint8Array, groupCount: num
 
 export const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): void => {
 	const used = new Uint8Array(256);
-	for (const byte of block) used[byte] = 1;
+	for (let index = 0; index < block.length; index++) used[block[index]!] = 1;
 
 	const { lastColumn, originalPointer } = burrowsWheelerTransform(block);
 	const mtf = encodeMoveToFront(lastColumn, used);
@@ -239,11 +289,40 @@ export class BlockCollector {
 		}
 		if (!(chunk instanceof Uint8Array)) throw new TypeError('Bzip2 input chunks must be Uint8Array values');
 
-		for (const byte of chunk) {
-			const required = this.#requiredEncodedBytes(byte);
-			if (this.#block.length - this.#blockLength < required) this.#finishBlock();
-			this.#appendByte(byte);
+		const block = this.#block;
+		let length = this.#blockLength;
+		let runByte = this.#runByte;
+		let runLength = this.#runLength;
+		let crcStart = 0;
+		for (let index = 0; index < chunk.length; index++) {
+			const byte = chunk[index]!;
+			const required = byte !== runByte || runLength < 3 || runLength === 259 ? 1 : runLength === 3 ? 2 : 0;
+			if (block.length - length < required) {
+				this.#blockLength = length;
+				this.#blockCrc.updateBytes(chunk.subarray(crcStart, index));
+				this.#finishBlock();
+				crcStart = index;
+				length = 0;
+				runByte = -1;
+				runLength = 0;
+			}
+			if (byte !== runByte || runLength === 259) {
+				runByte = byte;
+				runLength = 1;
+				block[length++] = byte;
+			} else if (++runLength <= 3) {
+				block[length++] = byte;
+			} else if (runLength === 4) {
+				block[length++] = byte;
+				block[length++] = 0;
+			} else {
+				block[length - 1] = runLength - 4;
+			}
 		}
+		this.#blockLength = length;
+		this.#runByte = runByte;
+		this.#runLength = runLength;
+		this.#blockCrc.updateBytes(chunk.subarray(crcStart));
 	}
 
 	finish(): void {
@@ -256,45 +335,6 @@ export class BlockCollector {
 		this.#finished = true;
 		this.#block = new Uint8Array(0);
 		this.#blockLength = 0;
-	}
-
-	#requiredEncodedBytes(byte: number): number {
-		if (byte !== this.#runByte) return 1;
-		if (this.#runLength < 3 || this.#runLength === 259) return 1;
-		if (this.#runLength === 3) return 2;
-		return 0;
-	}
-
-	#appendByte(byte: number): void {
-		this.#blockCrc.update(byte);
-
-		if (byte !== this.#runByte) {
-			this.#runByte = byte;
-			this.#runLength = 1;
-			this.#block[this.#blockLength++] = byte;
-			return;
-		}
-
-		this.#runLength++;
-
-		if (this.#runLength <= 3) {
-			this.#block[this.#blockLength++] = byte;
-			return;
-		}
-
-		if (this.#runLength === 4) {
-			this.#block[this.#blockLength++] = byte;
-			this.#block[this.#blockLength++] = 0;
-			return;
-		}
-
-		if (this.#runLength <= 259) {
-			this.#block[this.#blockLength - 1] = this.#runLength - 4;
-			return;
-		}
-
-		this.#runLength = 1;
-		this.#block[this.#blockLength++] = byte;
 	}
 
 	#finishBlock(): void {

@@ -17,7 +17,7 @@ const config = JSON.parse(await text(process.stdin)) as {
 };
 const compressing = config.operation === 'compress';
 const codec = config.mode === 'js' || compressing ? await import(pathToFileURL(config.bundle).href) : undefined;
-const bytes = new Uint8Array(await readFile(config.inputPath));
+const bytes = await readFile(config.inputPath);
 const inputSha256 = createHash('sha256').update(bytes).digest('hex');
 const controller = new AbortController();
 let timedOut = false;
@@ -45,7 +45,8 @@ try {
 			new WritableStream<Uint8Array>({
 				write(chunk) {
 					outputBytes += chunk.length;
-					chunks.push(chunk);
+					// Native pipe views can retain much larger backing buffers than their payload.
+					chunks.push(config.mode === 'js' ? chunk : Uint8Array.from(chunk));
 				}
 			}),
 			{ signal: controller.signal }

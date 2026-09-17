@@ -62,6 +62,19 @@ across single-threaded and worker runs. JS and WASM may produce different archiv
 The command-line file and round count override environment values. These settings
 are separate from decompression's `BZIP_BENCHMARK_*` settings.
 
+For focused encoder profiling and deterministic generated-data comparisons:
+
+```sh
+bun --cpu-prof-md scripts/profile-compression.ts ./uncompressed-file 16 3
+bun scripts/benchmark-compression-corpus.ts src/js.ts /tmp/compression-corpus.json
+```
+
+The profile script accepts sample MiB, rounds, an optional source module path, and
+an execution mode (`sync`, `cooperative`, `auto`, or a worker count). The corpus
+script checks block sizes 1–9 against the library and native bzip2 decoder. Use
+distinct report paths when comparing revisions to preserve baseline evidence.
+See [the compression review](performance-review.md) for one complete measurement.
+
 ### Decompression
 
 ```sh

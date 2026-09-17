@@ -4,6 +4,7 @@ import type { CompressOptions, CompressionStreamOptions, ResolvedCompressOptions
 import type { ByteSink } from './bit-writer.ts';
 import { ParallelEncoderEngine, type CompressionBackend } from '../parallel/compression-engine.ts';
 import { INPUT_SLICE_SIZE, transformBuffer } from './async-buffer.ts';
+import { CancellableTransform } from './cancellable-transform.ts';
 
 export interface CompressionEngine {
 	push(chunk: Uint8Array): void;
@@ -36,7 +37,7 @@ export const createCompressionFunctions = (
 		if (concurrency > 1) {
 			if (!parallel) throw new Error('Compression worker backend is unavailable');
 			let engine: ParallelEncoderEngine;
-			const transformer: Transformer<Uint8Array, Uint8Array> & { cancel(): void } = {
+			const transformer: Transformer<Uint8Array, Uint8Array> = {
 				start(controller) {
 					engine = new ParallelEncoderEngine(
 						resolved,
@@ -51,12 +52,9 @@ export const createCompressionFunctions = (
 				},
 				flush() {
 					return engine.finish();
-				},
-				cancel() {
-					engine.close();
 				}
 			};
-			return new TransformStream<Uint8Array, Uint8Array>(transformer);
+			return new CancellableTransform(transformer, () => engine.close());
 		}
 		let encoder: CompressionEngine;
 		let closed = false;
@@ -99,7 +97,7 @@ export const createCompressionFunctions = (
 				close();
 			}
 		};
-		const transformer: Transformer<Uint8Array, Uint8Array> & { cancel(): void } = {
+		const transformer: Transformer<Uint8Array, Uint8Array> = {
 			start(controller) {
 				encoder = createEncoder(resolved, chunk => controller.enqueue(chunk));
 			},
@@ -119,12 +117,9 @@ export const createCompressionFunctions = (
 				} finally {
 					close();
 				}
-			},
-			cancel() {
-				close();
 			}
 		};
-		return new TransformStream<Uint8Array, Uint8Array>(transformer);
+		return new CancellableTransform(transformer, close);
 	};
 	const compressAsync = (input: Uint8Array, options?: CompressionStreamOptions): Promise<Uint8Array> =>
 		transformBuffer(input, () => createCompressionStream(options));
