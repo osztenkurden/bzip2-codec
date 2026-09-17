@@ -103,7 +103,7 @@ export class ParallelDecoderEngine {
 		options: ResolvedDecompressOptions,
 		concurrency: number,
 		sink: ByteSink,
-		hooks: { findMarker?: MarkerFinder; onError?: (error: Error) => void; worker?: WorkerDefinition } = {}
+		hooks: { findMarker?: MarkerFinder; onError?: (error: Error) => void; worker: WorkerDefinition }
 	) {
 		this.#options = options;
 		this.#sink = sink;

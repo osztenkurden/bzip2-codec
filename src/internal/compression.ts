@@ -3,7 +3,7 @@ import { resolveCompressOptions, resolveCompressionStreamOptions } from '../opti
 import type { CompressOptions, CompressionStreamOptions, ResolvedCompressOptions } from '../types.ts';
 import type { ByteSink } from './bit-writer.ts';
 import { ParallelEncoderEngine, type CompressionBackend } from '../parallel/compression-engine.ts';
-import { INPUT_SLICE_SIZE, transformBuffer } from './async-buffer.ts';
+import { INPUT_SLICE_SIZE } from './async-buffer.ts';
 import { CancellableTransform } from './cancellable-transform.ts';
 
 export interface CompressionEngine {
@@ -12,11 +12,10 @@ export interface CompressionEngine {
 	close?(): void;
 }
 
-export const createCompressionFunctions = (
-	createEncoder: (options: ResolvedCompressOptions, sink: ByteSink) => CompressionEngine,
-	parallel?: CompressionBackend
+export const createCompress = (
+	createEncoder: (options: ResolvedCompressOptions, sink: ByteSink) => CompressionEngine
 ) => {
-	const compress = (input: Uint8Array, options?: CompressOptions): Uint8Array => {
+	return (input: Uint8Array, options?: CompressOptions): Uint8Array => {
 		if (!(input instanceof Uint8Array)) throw new TypeError('Bzip2 input must be a Uint8Array');
 		const chunks: Uint8Array[] = [];
 		let outputLength = 0;
@@ -32,7 +31,13 @@ export const createCompressionFunctions = (
 			encoder.close?.();
 		}
 	};
-	const createCompressionStream = (options?: CompressionStreamOptions): TransformStream<Uint8Array, Uint8Array> => {
+};
+
+export const createCompressionStreamFactory = (
+	createEncoder: (options: ResolvedCompressOptions, sink: ByteSink) => CompressionEngine,
+	parallel?: CompressionBackend
+) => {
+	return (options?: CompressionStreamOptions): TransformStream<Uint8Array, Uint8Array> => {
 		const { yieldAfterMs, concurrency, ...resolved } = resolveCompressionStreamOptions(options);
 		if (concurrency > 1) {
 			if (!parallel) throw new Error('Compression worker backend is unavailable');
@@ -121,7 +126,4 @@ export const createCompressionFunctions = (
 		};
 		return new CancellableTransform(transformer, close);
 	};
-	const compressAsync = (input: Uint8Array, options?: CompressionStreamOptions): Promise<Uint8Array> =>
-		transformBuffer(input, () => createCompressionStream(options));
-	return { compress, compressAsync, createCompressionStream };
 };

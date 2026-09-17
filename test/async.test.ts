@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as js from '../src/js.ts';
 import * as wasm from '../src/wasm/index.ts';
-import { createCompressionFunctions } from '../src/internal/compression.ts';
+import { createCompressionStreamFactory } from '../src/internal/compression.ts';
 
 const random = (length: number) => {
 	let state = 42;
@@ -111,7 +111,7 @@ for (const [name, api] of [
 test('compression work budget accumulates across tiny writes', async () => {
 	let pushes = 0,
 		observed: number | undefined;
-	const api = createCompressionFunctions((_options, sink) => ({
+	const createStream = createCompressionStreamFactory((_options, sink) => ({
 		push() {
 			const until = performance.now() + 2;
 			while (performance.now() < until) {}
@@ -132,7 +132,7 @@ test('compression work budget accumulates across tiny writes', async () => {
 					if (!remaining--) return controller.close();
 					controller.enqueue(Uint8Array.of(1));
 				}
-			}).pipeThrough(api.createCompressionStream({ yieldAfterMs: 5 }))
+			}).pipeThrough(createStream({ yieldAfterMs: 5 }))
 		);
 		assert.deepEqual(result, Uint8Array.of(20));
 		assert.ok(observed !== undefined && observed > 0 && observed < 20);
@@ -144,7 +144,7 @@ test('compression work budget accumulates across tiny writes', async () => {
 test('canceling cooperative compression stops further work and closes its engine', async () => {
 	let pushes = 0,
 		closes = 0;
-	const api = createCompressionFunctions((_options, sink) => ({
+	const createStream = createCompressionStreamFactory((_options, sink) => ({
 		push() {
 			pushes++;
 			sink(Uint8Array.of(1));
@@ -154,7 +154,7 @@ test('canceling cooperative compression stops further work and closes its engine
 			closes++;
 		}
 	}));
-	const stream = api.createCompressionStream({ yieldAfterMs: 0 });
+	const stream = createStream({ yieldAfterMs: 0 });
 	const reader = stream.readable.getReader(),
 		writer = stream.writable.getWriter();
 	const reading = reader.read();

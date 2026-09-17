@@ -1,3 +1,2 @@
-// The package build replaces this module with a bundled, self-contained worker script.
-// Unbundled source development in Bun uses decompression-worker.ts directly.
-export const WORKER_SOURCE: string | undefined = undefined;
+// The package build replaces this development URL with an embedded worker.
+export const WORKER_SOURCE = /* @__PURE__ */ new URL('./decompression-worker.ts', import.meta.url);

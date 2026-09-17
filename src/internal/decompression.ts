@@ -2,16 +2,12 @@ import type { DecoderEngine } from '../codec/decoder.ts';
 import { ParallelDecoderEngine } from '../parallel/engine.ts';
 import type { WorkerDefinition } from '../parallel/pool.ts';
 import { concatChunks } from './chunks.ts';
-import { transformBuffer } from './async-buffer.ts';
 import { CancellableTransform } from './cancellable-transform.ts';
 import { resolveDecompressionStreamOptions, resolveDecompressOptions } from '../options.ts';
 import type { DecompressionStreamOptions, DecompressOptions, ResolvedDecompressOptions } from '../types.ts';
 
-export const createDecompressionFunctions = (
-	createDecoder: (options: ResolvedDecompressOptions) => DecoderEngine,
-	worker?: WorkerDefinition
-) => {
-	const decompress = (input: Uint8Array, options?: DecompressOptions): Uint8Array => {
+export const createDecompress = (createDecoder: (options: ResolvedDecompressOptions) => DecoderEngine) => {
+	return (input: Uint8Array, options?: DecompressOptions): Uint8Array => {
 		if (!(input instanceof Uint8Array)) throw new TypeError('Bzip2 input must be a Uint8Array');
 
 		const chunks: Uint8Array[] = [];
@@ -26,10 +22,13 @@ export const createDecompressionFunctions = (
 		decoder.finish(emit);
 		return concatChunks(chunks, outputLength);
 	};
+};
 
-	const createDecompressionStream = (
-		options?: DecompressionStreamOptions
-	): TransformStream<Uint8Array, Uint8Array> => {
+export const createDecompressionStreamFactory = (
+	createDecoder: (options: ResolvedDecompressOptions) => DecoderEngine,
+	worker: WorkerDefinition
+) => {
+	return (options?: DecompressionStreamOptions): TransformStream<Uint8Array, Uint8Array> => {
 		const { yieldAfterMs, concurrency, ...decoderOptions } = resolveDecompressionStreamOptions(options);
 
 		if (concurrency > 1) {
@@ -78,8 +77,4 @@ export const createDecompressionFunctions = (
 			}
 		});
 	};
-
-	const decompressAsync = (input: Uint8Array, options?: DecompressionStreamOptions): Promise<Uint8Array> =>
-		transformBuffer(input, () => createDecompressionStream(options));
-	return { decompress, decompressAsync, createDecompressionStream };
 };

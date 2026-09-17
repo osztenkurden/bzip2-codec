@@ -1,2 +1,2 @@
-/** Replaced by the package build with the standalone JS compression worker. */
-export const WORKER_SOURCE: string | undefined = undefined;
+// The package build replaces this development URL with an embedded worker.
+export const WORKER_SOURCE = /* @__PURE__ */ new URL('./compression-worker.ts', import.meta.url);

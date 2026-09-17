@@ -169,7 +169,8 @@ test('validates the concurrency option', async () => {
 const decodeWithFinder = async (input: Uint8Array, finder: MarkerFinder, chunkSize: number): Promise<Uint8Array> => {
 	const chunks: Uint8Array[] = [];
 	const engine = new ParallelDecoderEngine(resolveDecompressOptions({}), 3, chunk => chunks.push(chunk), {
-		findMarker: finder
+		findMarker: finder,
+		worker: new URL('../src/parallel/decompression-worker.ts', import.meta.url)
 	});
 	try {
 		for (let offset = 0; offset < input.byteLength; offset += chunkSize) {

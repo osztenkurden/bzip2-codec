@@ -1,4 +1,4 @@
-export const BZIP_HEADER = new Uint8Array([0x42, 0x5a, 0x68]);
+export const BZIP_HEADER = /* @__PURE__ */ new Uint8Array([0x42, 0x5a, 0x68]);
 
 export const BLOCK_MARKER_HIGH = 0x314159;
 export const BLOCK_MARKER_LOW = 0x265359;

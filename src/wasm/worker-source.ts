@@ -1,2 +1,2 @@
-/** Replaced by the build with a standalone worker containing the WASM bytes. */
-export const WORKER_SOURCE: string | undefined = undefined;
+// The package build replaces this development URL with an embedded worker.
+export const WORKER_SOURCE = /* @__PURE__ */ new URL('./worker.ts', import.meta.url);

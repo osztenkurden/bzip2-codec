@@ -1,7 +1,6 @@
 import { WORKER_READY, type BlockOutcome, type BlockTask } from './protocol.ts';
-import { WORKER_SOURCE } from './worker-source.ts';
 
-export type WorkerDefinition = string | URL;
+export type WorkerDefinition = string | URL | (() => string);
 
 /** The subset of the Web Worker API the pool needs. */
 interface WorkerHandle<Task> {
@@ -39,6 +38,7 @@ const createWorker = <Task, Outcome>(
 	callbacks: WorkerCallbacks<Outcome>,
 	definition: WorkerDefinition
 ): WorkerHandle<Task> => {
+	if (typeof definition === 'function') definition = definition();
 	const url =
 		typeof definition === 'string'
 			? URL.createObjectURL(new Blob([definition], { type: 'text/javascript' }))
@@ -89,10 +89,7 @@ export class WorkerPool<
 	readonly #inFlight = new Map<number, Waiter<Task, Outcome>>();
 	#closed = false;
 
-	constructor(
-		size: number,
-		definition: WorkerDefinition = WORKER_SOURCE ?? new URL('./decompression-worker.ts', import.meta.url)
-	) {
+	constructor(size: number, definition: WorkerDefinition) {
 		if (!supportsWorkers()) throw new TypeError('This runtime does not provide the Web Worker API');
 		this.#size = size;
 		this.#definition = definition;

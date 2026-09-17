@@ -14,16 +14,20 @@ const createLookupTable = (): Uint32Array => {
 	return table;
 };
 
-const LOOKUP = createLookupTable();
-const LOOKUP_2 = new Uint32Array(256);
-const LOOKUP_3 = new Uint32Array(256);
-const LOOKUP_4 = new Uint32Array(256);
-for (let byte = 0; byte < 256; byte++) {
-	let crc = LOOKUP[byte]!;
-	LOOKUP_2[byte] = crc = (crc << 8) ^ LOOKUP[crc >>> 24]!;
-	LOOKUP_3[byte] = crc = (crc << 8) ^ LOOKUP[crc >>> 24]!;
-	LOOKUP_4[byte] = (crc << 8) ^ LOOKUP[crc >>> 24]!;
-}
+// These tables only mutate their own storage and can be dropped with the CRC implementation.
+const [LOOKUP, LOOKUP_2, LOOKUP_3, LOOKUP_4] = /* @__PURE__ */ (() => {
+	const LOOKUP = createLookupTable();
+	const LOOKUP_2 = new Uint32Array(256);
+	const LOOKUP_3 = new Uint32Array(256);
+	const LOOKUP_4 = new Uint32Array(256);
+	for (let byte = 0; byte < 256; byte++) {
+		let crc = LOOKUP[byte]!;
+		LOOKUP_2[byte] = crc = (crc << 8) ^ LOOKUP[crc >>> 24]!;
+		LOOKUP_3[byte] = crc = (crc << 8) ^ LOOKUP[crc >>> 24]!;
+		LOOKUP_4[byte] = (crc << 8) ^ LOOKUP[crc >>> 24]!;
+	}
+	return [LOOKUP, LOOKUP_2, LOOKUP_3, LOOKUP_4] as const;
+})();
 
 export class BzipCrc32 {
 	#crc = 0xffffffff;

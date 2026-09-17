@@ -25,18 +25,21 @@ export const MARKER_SCAN_LOOKAHEAD = 6;
  * end-of-stream markers. Filtering on two bytes rejects 99.98% of positions before a
  * full 48-bit comparison.
  */
-const CANDIDATES = new Uint16Array(1 << 16);
+const CANDIDATES = /* @__PURE__ */ (() => {
+	const candidates = new Uint16Array(1 << 16);
 
-const markerBits = (high: number, low: number, shift: number): number =>
-	// (marker >>> (32 - shift)) & 0xffff without exceeding 32-bit arithmetic.
-	shift <= 8 ? (high >>> (8 - shift)) & 0xffff : ((high << (shift - 8)) | (low >>> (32 - shift))) & 0xffff;
+	const markerBits = (high: number, low: number, shift: number): number =>
+		// (marker >>> (32 - shift)) & 0xffff without exceeding 32-bit arithmetic.
+		shift <= 8 ? (high >>> (8 - shift)) & 0xffff : ((high << (shift - 8)) | (low >>> (32 - shift))) & 0xffff;
 
-for (let shift = 0; shift < 8; shift++) {
-	const block = markerBits(BLOCK_MARKER_HIGH, BLOCK_MARKER_LOW, shift);
-	const end = markerBits(STREAM_END_MARKER_HIGH, STREAM_END_MARKER_LOW, shift);
-	CANDIDATES[block] = CANDIDATES[block]! | (1 << shift);
-	CANDIDATES[end] = CANDIDATES[end]! | (1 << (8 + shift));
-}
+	for (let shift = 0; shift < 8; shift++) {
+		const block = markerBits(BLOCK_MARKER_HIGH, BLOCK_MARKER_LOW, shift);
+		const end = markerBits(STREAM_END_MARKER_HIGH, STREAM_END_MARKER_LOW, shift);
+		candidates[block] = candidates[block]! | (1 << shift);
+		candidates[end] = candidates[end]! | (1 << (8 + shift));
+	}
+	return candidates;
+})();
 
 const read24 = (bytes: Uint8Array, bit: number): number => {
 	const index = bit >>> 3;
