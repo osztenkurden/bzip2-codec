@@ -22,12 +22,16 @@ export const prepareCompressionInput = async ({
 	source,
 	repository,
 	url = DEFAULT_REPLAY_URL,
-	timeoutMs
+	timeoutMs,
+	fetchArchive = fetchIPv4,
+	log = console.log
 }: {
 	source?: string;
 	repository: string;
 	url?: string;
 	timeoutMs: number;
+	fetchArchive?: typeof fetchIPv4;
+	log?: (message: string) => void;
 }): Promise<{ inputPath: string; source: string; cleanup: () => Promise<void> }> => {
 	if (source !== undefined) {
 		const inputPath = resolve(source);
@@ -40,7 +44,7 @@ export const prepareCompressionInput = async ({
 	const rawName = archiveName.endsWith('.bz2') ? archiveName.slice(0, -4) : `${archiveName}.raw`;
 	const localRaw = join(repository, rawName);
 	if (await isFile(localRaw)) {
-		console.log(`Using local replay ${localRaw}.`);
+		log(`Using local replay ${localRaw}.`);
 		return { inputPath: localRaw, source: localRaw, cleanup: async () => {} };
 	}
 	const localArchive = join(repository, archiveName);
@@ -51,8 +55,8 @@ export const prepareCompressionInput = async ({
 		let archive = localArchive;
 		let inputSource = localArchive;
 		if (!(await isFile(localArchive))) {
-			console.log(`Downloading ${url} (excluded from timings)...`);
-			const response = await fetchIPv4(url, signal);
+			log(`Downloading ${url} (excluded from timings)...`);
+			const response = await fetchArchive(url, signal);
 			if (!response.ok || !response.body) {
 				await response.body?.cancel();
 				throw new Error(`HTTP ${response.status}; redirects are not followed`);
@@ -69,7 +73,7 @@ export const prepareCompressionInput = async ({
 				throw new Error('Content-Length mismatch');
 			inputSource = url;
 		}
-		console.log(`Decompressing ${inputSource} (excluded from timings)...`);
+		log(`Decompressing ${inputSource} (excluded from timings)...`);
 		const inputPath = join(scratch, 'input');
 		const { createDecompressionStream } = await import('../../src/wasm/index.ts');
 		// Node/Bun's stream declarations differ from the codec's DOM stream types.
