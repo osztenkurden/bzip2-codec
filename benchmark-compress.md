@@ -41,6 +41,5 @@ block size 9. Input: 321,837,400 bytes; SHA-256:
 | bzip2-codec (JS, auto)   |    13.525 s |       23.80 MB/s |      220,191,521 |     68.42% | 13.402–13.629 s |
 | bzip2-codec (WASM, auto) |     7.038 s |       45.73 MB/s |      220,010,648 |     68.36% |   6.995–7.101 s |
 
-See [the review](performance-review.md) for fresh before/after baselines, all trial
-times, decoder controls, profiling, memory observations and validation. JS improved
-4.75× single-threaded and 6.89× with workers with unchanged replay output bytes.
+JS improved 4.75× single-threaded and 6.89× with workers with unchanged replay
+output bytes in this measurement.

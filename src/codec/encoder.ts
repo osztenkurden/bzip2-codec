@@ -16,93 +16,73 @@ import { createHuffmanEncodingTable, type HuffmanEncodingTable } from '../format
 import { BitWriter, type ByteSink } from '../internal/bit-writer.ts';
 import type { BlockSize, ResolvedCompressOptions } from '../types.ts';
 
-const encodeMoveToFront = (
+export const encodeMoveToFront = (
 	lastColumn: Uint8Array,
 	used: Uint8Array
 ): { readonly symbols: Uint16Array; readonly alphabetSize: number } => {
 	const alphabetSize = used.reduce((count, value) => count + value, 0);
 	const endOfBlock = alphabetSize + 1;
 	const encoded = new Uint16Array(lastColumn.length + 1);
-	// The decoder's drifting 16-byte rows also bound forward MTF work: move
-	// at most 15 entries within a row and one boundary entry per preceding row.
-	// Track physical positions and row membership instead of updating 255 ranks.
-	const order = new Uint8Array(4096);
-	const bases = new Int32Array(16);
-	const positions = new Int32Array(256);
-	const rows = new Uint8Array(256);
-	for (let row = 0; row < 16; row++) bases[row] = 3840 + row * 16;
-
+	// Logical little-endian words, built with shifts rather than aliased views:
+	// host byte order is irrelevant. The first alphabetSize - 1 entries contain
+	// every used byte except front; padding is never reached before a real match.
+	const order = new Uint32Array(64);
+	let front = -1;
 	for (let byte = 0, index = 0; byte < 256; byte++) {
 		if (used[byte] === 0) continue;
-		order[3840 + index] = byte;
-		positions[byte] = 3840 + index;
-		rows[byte] = index++ >>> 4;
+		if (front < 0) front = byte;
+		else {
+			order[index >>> 2]! |= byte << ((index & 3) * 8);
+			index++;
+		}
 	}
 
 	let outputLength = 0;
 	let zeroRunLength = 0;
 
-	const emit = (symbol: number) => {
-		encoded[outputLength++] = symbol;
-	};
-
-	const emitZeroRun = () => {
-		while (zeroRunLength > 0) {
-			if ((zeroRunLength & 1) !== 0) {
-				emit(RUN_A);
-				zeroRunLength--;
-			} else {
-				emit(RUN_B);
-				zeroRunLength -= 2;
-			}
-			zeroRunLength >>>= 1;
-		}
-	};
-
 	for (let offset = 0; offset < lastColumn.length; offset++) {
 		const byte = lastColumn[offset]!;
-		if (order[bases[0]!] === byte) {
+		if (front === byte) {
 			zeroRunLength++;
 		} else {
-			let row = rows[byte]!;
-			const base = bases[row]!;
-			let slot = positions[byte]!;
-			const position = row * 16 + slot - base;
-			while (slot > base) {
-				const moved = order[slot - 1]!;
-				order[slot] = moved;
-				positions[moved] = slot--;
-			}
-			bases[row] = base + 1;
-			while (row > 0) {
-				const destination = --bases[row]!;
-				const moved = order[bases[row - 1]! + 15]!;
-				order[destination] = moved;
-				positions[moved] = destination;
-				rows[moved] = row--;
-			}
-			const front = --bases[0]!;
-			order[front] = byte;
-			positions[byte] = front;
-			rows[byte] = 0;
-			if (front === 0) {
-				for (let row = 15; row >= 0; row--) {
-					for (let column = 15; column >= 0; column--) {
-						const moved = order[bases[row]! + column]!;
-						const destination = 3840 + row * 16 + column;
-						order[destination] = moved;
-						positions[moved] = destination;
+			let position = 1;
+			if ((order[0]! & 255) === byte) {
+				order[0] = (order[0]! & ~255) | front;
+			} else {
+				const repeated = Math.imul(byte, 0x01010101);
+				let carry = front;
+				for (let i = 0; ; i++) {
+					const word = order[i]!;
+					const x = word ^ repeated;
+					// A borrow can flag later lanes too, but the lowest flagged lane
+					// is always the first actual match. Shift only through that lane.
+					const match = (x - 0x01010101) & ~x & 0x80808080;
+					const shifted = (word << 8) | carry;
+					if (match !== 0) {
+						const slot = (31 - Math.clz32(match & -match)) >>> 3;
+						const mask = 0xffffffff >>> ((3 - slot) * 8);
+						order[i] = (word & ~mask) | (shifted & mask);
+						position = i * 4 + slot + 1;
+						break;
 					}
-					bases[row] = 3840 + row * 16;
+					order[i] = shifted;
+					carry = word >>> 24;
 				}
 			}
-			emitZeroRun();
-			emit(position + 1);
+			front = byte;
+			while (zeroRunLength > 0) {
+				encoded[outputLength++] = (zeroRunLength & 1) !== 0 ? RUN_A : RUN_B;
+				zeroRunLength = (zeroRunLength - 1) >>> 1;
+			}
+			encoded[outputLength++] = position + 1;
 		}
 	}
 
-	emitZeroRun();
-	emit(endOfBlock);
+	while (zeroRunLength > 0) {
+		encoded[outputLength++] = (zeroRunLength & 1) !== 0 ? RUN_A : RUN_B;
+		zeroRunLength = (zeroRunLength - 1) >>> 1;
+	}
+	encoded[outputLength++] = endOfBlock;
 
 	return { symbols: encoded.subarray(0, outputLength), alphabetSize };
 };
@@ -171,36 +151,37 @@ const optimizeHuffmanTables = (
 
 	for (let iteration = 0; iteration < 4; iteration++) {
 		const groupFrequencies = Array.from({ length: groupCount }, () => new Uint32Array(alphabetSize));
-		// Two 16-bit costs per word. A group has at most 50 * 20 bits, so
-		// additions cannot carry between lanes (the same idea as lbzip2's packed costs).
-		const costs01 = new Uint32Array(alphabetSize);
-		const costs23 = new Uint32Array(alphabetSize);
-		const costs45 = new Uint32Array(alphabetSize);
+		// Three 10-bit costs per word: a group's maximum cost is 50 * 20 = 1000.
+		const costs012 = new Uint32Array(alphabetSize);
+		const costs345 = new Uint32Array(alphabetSize);
 		for (let symbol = 0; symbol < alphabetSize; symbol++) {
-			costs01[symbol] = tables[0]!.lengths[symbol]! | (tables[1]!.lengths[symbol]! << 16);
-			costs23[symbol] = (tables[2]?.lengths[symbol] ?? 0) | ((tables[3]?.lengths[symbol] ?? 0) << 16);
-			costs45[symbol] = (tables[4]?.lengths[symbol] ?? 0) | ((tables[5]?.lengths[symbol] ?? 0) << 16);
+			costs012[symbol] =
+				tables[0]!.lengths[symbol]! |
+				(tables[1]!.lengths[symbol]! << 10) |
+				((tables[2]?.lengths[symbol] ?? 0) << 20);
+			costs345[symbol] =
+				(tables[3]?.lengths[symbol] ?? 0) |
+				((tables[4]?.lengths[symbol] ?? 0) << 10) |
+				((tables[5]?.lengths[symbol] ?? 0) << 20);
 		}
 		const costs = new Uint16Array(6);
 
 		for (let selector = 0; selector < selectorCount; selector++) {
 			const start = selector * HUFFMAN_GROUP_SIZE;
 			const end = Math.min(start + HUFFMAN_GROUP_SIZE, symbols.length);
-			let c01 = 0,
-				c23 = 0,
-				c45 = 0;
+			let c012 = 0,
+				c345 = 0;
 			for (let index = start; index < end; index++) {
 				const symbol = symbols[index]!;
-				c01 += costs01[symbol]!;
-				c23 += costs23[symbol]!;
-				c45 += costs45[symbol]!;
+				c012 += costs012[symbol]!;
+				c345 += costs345[symbol]!;
 			}
-			costs[0] = c01 & 0xffff;
-			costs[1] = c01 >>> 16;
-			costs[2] = c23 & 0xffff;
-			costs[3] = c23 >>> 16;
-			costs[4] = c45 & 0xffff;
-			costs[5] = c45 >>> 16;
+			costs[0] = c012 & 1023;
+			costs[1] = (c012 >>> 10) & 1023;
+			costs[2] = c012 >>> 20;
+			costs[3] = c345 & 1023;
+			costs[4] = (c345 >>> 10) & 1023;
+			costs[5] = c345 >>> 20;
 			let bestGroup = 0;
 			let bestCost = costs[0]!;
 
@@ -262,10 +243,9 @@ export const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: numb
 
 	for (let selector = 0, index = 0; selector < optimized.selectors.length; selector++) {
 		const table = optimized.tables[optimized.selectors[selector]!]!;
-		for (let groupIndex = 0; groupIndex < HUFFMAN_GROUP_SIZE && index < mtf.symbols.length; groupIndex++) {
-			const symbol = mtf.symbols[index++]!;
-			writer.writeBits(table.lengths[symbol]!, table.codes[symbol]!);
-		}
+		const end = Math.min(index + HUFFMAN_GROUP_SIZE, mtf.symbols.length);
+		writer.writeHuffmanGroup(mtf.symbols, index, end, table.lengths, table.codes);
+		index = end;
 	}
 };
 

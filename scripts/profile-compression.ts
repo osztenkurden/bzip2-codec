@@ -1,4 +1,5 @@
-import { open } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import type * as Codec from '../src/js.ts';
@@ -34,6 +35,9 @@ for (let round = 0; round < Number(process.argv[4] ?? 3); round++) {
 	const cpuUsage = process.cpuUsage(cpu);
 	await new Promise(resolve => setTimeout(resolve, 2));
 	clearInterval(timer);
+	// Unlike getrusage's maxRSS, Linux VmHWM excludes a pre-exec image's peak.
+	const status = process.platform === 'linux' ? await readFile('/proc/self/status', 'utf8') : '';
+	const vmHwm = /^VmHWM:\s+(\d+) kB$/m.exec(status);
 	console.log(
 		JSON.stringify({
 			round,
@@ -41,9 +45,11 @@ for (let round = 0; round < Number(process.argv[4] ?? 3); round++) {
 			ms,
 			input: bytesRead,
 			output: output.length,
+			sha256: createHash('sha256').update(output).digest('hex'),
 			maxTickGapMs,
 			cpuUsage,
-			maxRssKiB: process.resourceUsage().maxRSS
+			maxRssKiB: process.resourceUsage().maxRSS,
+			linuxVmHwmKiB: vmHwm ? Number(vmHwm[1]) : undefined
 		})
 	);
 }

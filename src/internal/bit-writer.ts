@@ -51,6 +51,38 @@ export class BitWriter {
 		this.writeBits(8, value);
 	}
 
+	/** Emit a group of encoder-owned Huffman codes (each at most 20 bits). */
+	writeHuffmanGroup(symbols: Uint16Array, start: number, end: number, lengths: Uint8Array, codes: Uint32Array): void {
+		let bits = this.#partialBits;
+		let value = this.#partialByte;
+		const buffer = this.#buffer;
+		let destination = this.#length;
+		let completeBytes = this.#completeBytes;
+		for (let index = start; index < end; index++) {
+			const symbol = symbols[index]!;
+			const count = lengths[symbol]!;
+			// At most seven pending bits plus a 20-bit code fit in a JS word.
+			value = (value << count) | codes[symbol]!;
+			bits += count;
+			while (bits >= 8) {
+				bits -= 8;
+				buffer[destination++] = value >>> bits;
+				completeBytes++;
+				if (destination === buffer.length) {
+					this.#length = destination;
+					this.#completeBytes = completeBytes;
+					this.flush();
+					destination = 0;
+				}
+			}
+			value &= (1 << bits) - 1;
+		}
+		this.#partialBits = bits;
+		this.#partialByte = value;
+		this.#length = destination;
+		this.#completeBytes = completeBytes;
+	}
+
 	get bitLength(): number {
 		return this.#completeBytes * 8 + this.#partialBits;
 	}

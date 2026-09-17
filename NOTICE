@@ -25,3 +25,5 @@ encoder and decoder:
 lbzip2 is distributed under GPL version 3 or, at your option, any later version.
 The pinned source, freestanding adapter, build script and full license are
 included in wasm/. See wasm/README.md and wasm/vendor/COPYING.
+The local WASM word-at-a-time MTF optimization in wasm/vendor/encode.c is
+identified with its modification date in that file.

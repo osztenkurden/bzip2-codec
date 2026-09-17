@@ -1,6 +1,9 @@
 import { join } from 'node:path';
 import { readdir } from 'node:fs/promises';
 const dir = import.meta.dirname;
+const selectedTarget = process.argv[2];
+if (selectedTarget !== undefined && selectedTarget !== 'encoder' && selectedTarget !== 'decoder')
+	throw new Error('Usage: bun wasm/build.ts [encoder|decoder]');
 const flags = [
 	'--target=wasm32-unknown-unknown',
 	'-O3',
@@ -34,6 +37,7 @@ for (const target of [
 	{
 		name: 'decoder',
 		sources: ['bridge.c', 'vendor/decode.c', 'vendor/crctab.c'],
+		dependencies: [],
 		memory: 16777216,
 		manifest: 'build.json',
 		embedded: 'bytes.ts'
@@ -41,11 +45,13 @@ for (const target of [
 	{
 		name: 'encoder',
 		sources: ['encoder-bridge.c', 'vendor/divbwt.c', 'vendor/crctab.c'],
+		dependencies: ['vendor/encode.c'],
 		memory: 8388608,
 		manifest: 'encoder-build.json',
 		embedded: 'encoder-bytes.ts'
 	}
 ]) {
+	if (selectedTarget !== undefined && target.name !== selectedTarget) continue;
 	const targetFlags = [...flags, `-Wl,--initial-memory=${target.memory}`, `-Wl,--max-memory=${target.memory}`];
 	const command = [
 		Bun.env.CLANG ?? 'clang',
@@ -73,7 +79,12 @@ for (const target of [
 				sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
 				flags: targetFlags,
 				compiler,
-				sourceHashes
+				sourceHashes: Object.fromEntries(
+					Object.entries(sourceHashes).filter(
+						([file]) =>
+							file.endsWith('.h') || target.sources.includes(file) || target.dependencies.includes(file)
+					)
+				)
 			},
 			null,
 			'\t'

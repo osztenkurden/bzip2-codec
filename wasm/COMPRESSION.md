@@ -94,7 +94,8 @@ encoder because the block formation and entropy coding differ.
    JS collectors transfer RLE bytes and CRC; JS workers return exact bit lengths,
    so partial bytes are joined without padding. WASM collectors transfer compact
    snapshots with block size, RLE state, CRC, alphabet map, and actual collected
-   bytes. The adapter includes the unmodified pinned `encode.c` to access its
+   bytes. The adapter includes the pinned `encode.c` (with the local WASM MTF
+   optimization documented in [README.md](README.md)) to access its
    private fields at compile time; no native pointers or sorting workspace are
    serialized. Workers restore those fields into their own instance. Snapshot
    overhead is 276 bytes per block, rather than the approximately five-bytes-per-

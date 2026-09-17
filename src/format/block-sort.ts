@@ -1,30 +1,47 @@
+// Packed input: symbol in bits 2+, predecessor's S type in bit 1, own S type
+// in bit 0. SA entries carry these two type bits in bits 31/30; the remaining
+// bits hold a position (blocks have at most 900,000 bytes). -1 marks empty rows.
 const induce = (
 	input: Int32Array,
 	sa: Int32Array,
-	types: Uint8Array,
 	starts: Int32Array,
 	ends: Int32Array,
 	buckets: Int32Array,
-	lms: Int32Array
+	lms: Int32Array,
+	orderedLms: Int32Array
 ): void => {
 	const n = input.length;
 	sa.fill(-1);
 	buckets.set(ends);
 	for (let i = lms.length - 1; i >= 0; i--) {
 		const p = lms[i]!;
-		sa[--buckets[input[p]!]!] = p;
+		sa[--buckets[input[p]! >>> 2]!] = p | 0x40000000;
 	}
 	buckets.set(starts);
 	for (let i = 0; i < n; i++) {
 		const entry = sa[i]!;
-		const p = entry === 0 ? n - 1 : entry - 1;
-		if (p >= 0 && types[p] === 0) sa[buckets[input[p]!]!++] = p;
+		// A nonnegative row has an L predecessor; skip S/empty rows before gathering.
+		if (entry < 0) continue;
+		const row = entry & 0x3fffffff;
+		const p = row === 0 ? n - 1 : row - 1;
+		const value = input[p]!;
+		sa[buckets[value >>> 2]!++] = p | (value << 30);
 	}
 	buckets.set(ends);
+	let cursor = orderedLms.length;
 	for (let i = n - 1; i >= 0; i--) {
 		const entry = sa[i]!;
-		const p = entry === 0 ? n - 1 : entry - 1;
-		if (p >= 0 && types[p] !== 0) sa[--buckets[input[p]!]!] = p;
+		if (entry >= 0) {
+			// Reverse induction has finalized this row. An S row with an L
+			// predecessor is LMS: collect it here instead of rescanning the SA.
+			if ((entry & 0x40000000) !== 0) orderedLms[--cursor] = entry & 0x3fffffff;
+			continue;
+		}
+		if (entry === -1) continue;
+		const row = entry & 0x3fffffff;
+		const p = row === 0 ? n - 1 : row - 1;
+		const value = input[p]!;
+		sa[--buckets[value >>> 2]!] = p | (value << 30);
 	}
 };
 
@@ -36,7 +53,6 @@ const induce = (
 const sortRotations = (input: Int32Array, alphabetSize: number): Int32Array => {
 	const n = input.length;
 	const sa = new Int32Array(n);
-	const types = new Uint8Array(n);
 	let firstDifferent = 1;
 	while (firstDifferent < n && input[firstDifferent] === input[0]) firstDifferent++;
 	if (firstDifferent === n) {
@@ -44,13 +60,32 @@ const sortRotations = (input: Int32Array, alphabetSize: number): Int32Array => {
 		return sa;
 	}
 	// Equal symbols inherit the next type, including across the cyclic boundary.
-	types[n - 1] =
+	const lastType =
 		input[n - 1]! < input[0]! || (input[n - 1] === input[0] && input[0]! < input[firstDifferent]!) ? 1 : 0;
-	for (let i = n - 2; i >= 0; i--) {
-		types[i] = input[i]! < input[i + 1]! || (input[i] === input[i + 1] && types[i + 1] !== 0) ? 1 : 0;
-	}
 	const counts = new Int32Array(alphabetSize);
-	for (let i = 0; i < n; i++) counts[input[i]!]!++;
+	// No two LMS positions are adjacent. One extra slot lets the branchless
+	// prospective write below stay in bounds even after all LMS rows were found.
+	const lmsBuffer = new Int32Array((n >>> 1) + 1);
+	let lmsStart = lmsBuffer.length;
+	let next = input[n - 1]!;
+	let nextType = lastType;
+	counts[next] = 1;
+	// Classify, count symbols, collect LMS boundaries and pack both types in one
+	// backward pass. input[i] stays raw until its predecessor has been classified.
+	for (let i = n - 2; i >= 0; i--) {
+		const current = input[i]!;
+		const type = +(current < next) | (+(current === next) & nextType);
+		counts[current]!++;
+		lmsBuffer[lmsStart - 1] = i + 1;
+		lmsStart -= (type ^ 1) & nextType;
+		input[i + 1] = (next << 2) | (type << 1) | nextType;
+		next = current;
+		nextType = type;
+	}
+	input[0] = (next << 2) | (lastType << 1) | nextType;
+	if (nextType !== 0 && lastType === 0) lmsBuffer[--lmsStart] = 0;
+	const lms = lmsBuffer.subarray(lmsStart);
+	const m = lms.length;
 	const starts = new Int32Array(alphabetSize);
 	const ends = new Int32Array(alphabetSize);
 	for (let c = 0, sum = 0; c < alphabetSize; c++) {
@@ -58,42 +93,35 @@ const sortRotations = (input: Int32Array, alphabetSize: number): Int32Array => {
 		ends[c] = sum += counts[c]!;
 	}
 	const buckets = new Int32Array(alphabetSize);
-	let m = 0;
-	for (let i = 0; i < n; i++) if (types[i] !== 0 && types[i === 0 ? n - 1 : i - 1] === 0) m++;
-	const lms = new Int32Array(m);
 	// Only LMS positions are addressed; there cannot be adjacent LMS positions.
 	const names = new Int32Array(Math.ceil(n / 2));
-	for (let i = 0, j = 0; i < n; i++) {
-		if (types[i] !== 0 && types[i === 0 ? n - 1 : i - 1] === 0) lms[j++] = i;
-	}
-	induce(input, sa, types, starts, ends, buckets, lms);
+	// First holds sorted LMS positions, then their names in original text order.
+	const reduced = new Int32Array(m);
+	induce(input, sa, starts, ends, buckets, lms, reduced);
 	let previous = -1;
 	let name = -1;
-	for (let i = 0; i < n; i++) {
-		const p = sa[i]!;
-		if (p < 0 || types[p] === 0 || types[p === 0 ? n - 1 : p - 1] !== 0) continue;
+	for (let i = 0; i < m; i++) {
+		const p = reduced[i]!;
 		let different = previous < 0;
 		if (!different) {
 			for (let d = 0; ; d++) {
 				const a = p + d < n ? p + d : p + d - n;
 				const b = previous + d < n ? previous + d : previous + d - n;
-				if (input[a] !== input[b] || types[a] !== types[b]) {
+				const av = input[a]!,
+					bv = input[b]!;
+				if (av !== bv) {
 					different = true;
 					break;
 				}
-				const aEnd = d > 0 && types[a] !== 0 && types[a === 0 ? n - 1 : a - 1] === 0;
-				const bEnd = d > 0 && types[b] !== 0 && types[b === 0 ? n - 1 : b - 1] === 0;
-				if (aEnd || bEnd) {
-					different = aEnd !== bEnd;
-					break;
-				}
+				// Equal packed values include equal type bits, so both substrings
+				// reach their next LMS boundary together.
+				if (d > 0 && (av & 3) === 1) break;
 			}
 		}
 		if (different) name++;
 		names[p >>> 1] = name;
 		previous = p;
 	}
-	const reduced = new Int32Array(m);
 	for (let i = 0; i < m; i++) reduced[i] = names[lms[i]! >>> 1]!;
 	let sorted: Int32Array;
 	if (name + 1 === m) {
@@ -102,8 +130,8 @@ const sortRotations = (input: Int32Array, alphabetSize: number): Int32Array => {
 	} else {
 		sorted = sortRotations(reduced, name + 1);
 	}
-	for (let i = 0; i < m; i++) sorted[i] = lms[sorted[i]!]!;
-	induce(input, sa, types, starts, ends, buckets, sorted);
+	for (let i = 0; i < m; i++) sorted[i] = lms[sorted[i]! & 0x3fffffff]!;
+	induce(input, sa, starts, ends, buckets, sorted, reduced);
 	return sa;
 };
 
@@ -124,7 +152,7 @@ export const burrowsWheelerTransform = (
 	const lastColumn = new Uint8Array(n);
 	let originalPointer = 0;
 	for (let row = 0; row < n; row++) {
-		const p = order[row]!;
+		const p = order[row]! & 0x3fffffff;
 		if (p === 0) originalPointer = row;
 		lastColumn[row] = input[p === 0 ? n - 1 : p - 1]!;
 	}

@@ -73,7 +73,8 @@ The profile script accepts sample MiB, rounds, an optional source module path, a
 an execution mode (`sync`, `cooperative`, `auto`, or a worker count). The corpus
 script checks block sizes 1–9 against the library and native bzip2 decoder. Use
 distinct report paths when comparing revisions to preserve baseline evidence.
-See [the compression review](performance-review.md) for one complete measurement.
+The corpus script accepts an optional third argument naming a comparison module;
+it then also requires identical compressed hashes between implementations.
 
 ### Decompression
 

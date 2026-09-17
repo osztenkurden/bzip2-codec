@@ -3,12 +3,18 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import type * as Codec from '../src/js.ts';
 
 // Compare revisions with identical generated input. File/module loading and all
 // validation are outside timing. Usage: bun scripts/benchmark-compression-corpus.ts
-// [path/to/src/js.ts] [report.json]. Each block size gets three warmed trials.
+// [path/to/src/js.ts] [report.json] [optional comparison module].
+// Each block size gets three warmed trials. Comparison requires identical bytes.
 const codec: typeof Codec = await import(pathToFileURL(resolve(process.argv[2] ?? 'src/js.ts')).href);
+const comparison: typeof Codec | undefined = process.argv[4]
+	? await import(pathToFileURL(resolve(process.argv[4])).href)
+	: undefined;
+const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const random = new Uint8Array(1_800_100);
 let seed = 0x12345678;
 for (let i = 0; i < random.length; i++) {
@@ -32,6 +38,9 @@ for (const [name, input] of Object.entries(inputs)) {
 	for (let blockSize = 1; blockSize <= 9; blockSize++) {
 		const options = { blockSize: blockSize as Codec.BlockSize };
 		const warm = codec.compress(input, options);
+		const sha256 = hash(warm);
+		if (comparison)
+			assert.equal(sha256, hash(comparison.compress(input, options)), `${name}, block size ${blockSize}`);
 		assert.deepEqual(codec.decompress(warm), input);
 		const native = spawnSync('bzip2', ['-dc'], { input: warm, maxBuffer: input.length + 65536 });
 		assert.equal(native.status, 0, native.stderr.toString());
@@ -43,7 +52,7 @@ for (const [name, input] of Object.entries(inputs)) {
 			times.push(performance.now() - start);
 			assert.deepEqual(output, warm);
 		}
-		const result = { name, inputBytes: input.length, blockSize, outputBytes: warm.length, times };
+		const result = { name, inputBytes: input.length, blockSize, outputBytes: warm.length, sha256, times };
 		results.push(result);
 		console.log(JSON.stringify(result));
 	}

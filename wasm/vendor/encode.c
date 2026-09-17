@@ -1,6 +1,8 @@
 /*-
   encode.c -- low-level compressor
 
+  Modified for bzip2-codec, 2026-09-17: word-at-a-time WASM MTF search/shift.
+
   Copyright (C) 2011, 2012, 2013, 2014 Mikolaj Izdebski
 
   This file is part of lbzip2.
@@ -356,12 +358,43 @@ make_map_e(uint8_t *cmap, const bool *inuse)
 
 
 /*---------------------------------------------------*/
+/* Local WASM optimization: search and shift eight MTF entries per iteration.
+   WebAssembly is little-endian. The first high bit in the zero-byte test
+   identifies the first match even when subtraction borrows into later bytes.
+   Constant-size builtin copies permit unaligned word loads without aliasing UB. */
+#if defined(__wasm__)
+static unsigned
+mtf_word(uint8_t *order, uint8_t c, uint8_t previous)
+{
+  const uint64_t ones = UINT64_C(0x0101010101010101);
+  const uint64_t high = UINT64_C(0x8080808080808080);
+  uint64_t repeated = ones * c;
+  uint64_t carry = previous;
+  for (unsigned offset = 0; ; offset += 8) {
+    uint64_t word;
+    __builtin_memcpy(&word, order + offset, 8);
+    uint64_t x = word ^ repeated;
+    uint64_t match = (x - ones) & ~x & high;
+    uint64_t shifted = (word << 8) | carry;
+    if (match) {
+      unsigned slot = __builtin_ctzll(match) >> 3;
+      uint64_t mask = UINT64_MAX >> ((7 - slot) * 8);
+      shifted = (word & ~mask) | (shifted & mask);
+      __builtin_memcpy(order + offset, &shifted, 8);
+      return offset + slot + 2;
+    }
+    __builtin_memcpy(order + offset, &shifted, 8);
+    carry = word >> 56;
+  }
+}
+#endif
+
 /* returns nmtf */
 static uint32_t
 do_mtf(int32_t *bwt, uint32_t *mtffreq, uint8_t *cmap, int32_t nblock,
        int32_t EOB)
 {
-  uint8_t order[255];
+  uint8_t order[256];
   int32_t i;
   int32_t k;
   int32_t t;
@@ -377,6 +410,7 @@ do_mtf(int32_t *bwt, uint32_t *mtffreq, uint8_t *cmap, int32_t nblock,
   u = 0;
   for (i = 0; i < 255; i++)
     order[i] = i + 1;
+  order[255] = 0;
 
 #define RUN()                                   \
   if (unlikely(k))                              \
@@ -410,7 +444,14 @@ do_mtf(int32_t *bwt, uint32_t *mtffreq, uint8_t *cmap, int32_t nblock,
       continue;
     }
     RUN();
+#if defined(__wasm__)
+    t = mtf_word(order, c, u);
+    u = c;
+    *mtfv++ = t;
+    mtffreq[t]++;
+#else
     MTF();
+#endif
   }
 
   RUN();

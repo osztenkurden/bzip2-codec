@@ -48,3 +48,13 @@ test('cyclic sorting handles periodic, long-prefix and full-alphabet blocks', ()
 		check(input);
 	}
 });
+
+test('packed cyclic types handle maximal LMS density and cyclic equal runs', () => {
+	for (const n of [511, 512, 513, 1023]) {
+		for (const phase of [0, 1]) check(Uint8Array.from({ length: n }, (_, i) => (i + phase) & 1));
+		const input = new Uint8Array(n).fill(255);
+		input[n >>> 1] = 0;
+		input[(n >>> 1) + 1] = 1;
+		check(input);
+	}
+});
