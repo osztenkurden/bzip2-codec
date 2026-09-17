@@ -294,9 +294,9 @@ For streams, catch errors around the awaited `source.pipeThrough(...).pipeTo(...
 
 ```sh
 bun install
+bun run build
 bun run typecheck
 npm test
-bun run build
 ```
 
 See [Contributing](CONTRIBUTING.md) for worker, WASM, interoperability, and package checks.

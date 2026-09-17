@@ -6,11 +6,11 @@
 
 ```sh
 bun install
+bun run build               # generates package exports used by typechecking
 bun run typecheck
 npm test                    # Node.js
 bun run test:parallel       # Bun workers and WASM
 bun run test:interop        # requires system bzip2
-bun run build
 bun run test:package        # built JS/WASM exports and Blob workers
 ```
 
