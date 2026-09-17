@@ -6,15 +6,15 @@
 
 ```sh
 bun install
+bun run build               # generates package exports used by typechecking
 bun run typecheck
 npm test                    # Node.js
 bun run test:parallel       # Bun workers and WASM
 bun run test:interop        # requires system bzip2
-bun run build
 bun run test:package        # built JS/WASM exports and Blob workers
 ```
 
-CI tests Node.js 22 and 24, and runs build and Bun checks once. Additional checks:
+Use Node.js 22.12.0+ and Bun. CI covers Node.js 22 and 24. Additional checks:
 
 ```sh
 bun run test:parallel:large  # generated input exceeding 512 MiB; also runs in CI
@@ -26,7 +26,58 @@ bun run benchmark:decoder -- path/to/file.bz2
 
 Set `BZIP_CONCURRENCY=auto` or a worker count for the memory and file-stream benchmarks. `benchmark:decoder` measures warmed synchronous and streaming throughput and requires system `bzip2`.
 
-## CPU benchmark report
+## Benchmarks
+
+Full-file reports compare JS/WASM at concurrency 1 and auto with `bzip2`
+(single-core) and `lbzip2` (all logical CPUs). Install the native tools to include
+them. Auto falls back to 1 without Web Workers.
+
+Timings include startup, streaming and output collection. Input loading, hashing
+and output validation are excluded. Reports are grouped by CPU, with raw trials
+in an adjacent `.md.json` file. Failed validation leaves the Markdown unchanged.
+
+### Compression
+
+```sh
+bun run benchmark:compress                       # default replay, three rounds
+bun run benchmark:compress ./uncompressed-file 3
+```
+
+Builds the package and benchmarks an **uncompressed file**. With no file argument,
+uses the same replay as `benchmark.ts`: prefers its raw file in the repository
+root, then a local `.bz2`, otherwise downloads it. Decompression and downloads
+happen before timing; temporary files are removed afterward. Results go to
+[benchmark-compress.md](benchmark-compress.md): median time, throughput, compressed
+size, size/input ratio and timing range. Every archive must round-trip to the
+original input. Single/auto compressed hashes must match within each backend;
+JS and WASM may produce different archives.
+
+| Environment variable       | Default                                               |
+| -------------------------- | ----------------------------------------------------- |
+| `BZIP_COMPRESS_FILE`       | Default replay                                        |
+| `BZIP_COMPRESS_URL`        | Same replay archive URL as `benchmark.ts`             |
+| `BZIP_COMPRESS_RUNS`       | `3`                                                   |
+| `BZIP_COMPRESS_BLOCK_SIZE` | `9` (accepts `1`–`9`)                                 |
+| `BZIP_COMPRESS_TIMEOUT_MS` | `1800000` per preparation/trial, including validation |
+| `BZIP_COMPRESS_REPORT`     | `benchmark-compress.md`                               |
+
+Command-line file and round count override environment values. Use
+`BZIP_COMPRESS_RUNS=5 bun run benchmark:compress` to change rounds with default input.
+
+For focused encoder profiling and deterministic generated-data comparisons:
+
+```sh
+bun --cpu-prof-md scripts/profile-compression.ts ./uncompressed-file 16 3
+bun scripts/benchmark-compression-corpus.ts src/js.ts /tmp/compression-corpus.json
+```
+
+- Profile arguments: input, sample MiB, rounds, optional module path, then execution
+  mode (`sync`, `cooperative`, `auto`, or a worker count).
+- Corpus arguments: module path, report path, optional comparison module. Tests
+  block sizes 1–9 with library/native round trips; a comparison module additionally
+  requires identical compressed hashes. Use distinct report paths for each revision.
+
+### Decompression
 
 ```sh
 bun benchmark.ts                         # default replay archive, three rounds
@@ -35,11 +86,10 @@ bun benchmark.ts 'https://host/demo.bz2' 5
 bun benchmark.ts ./archive.bz2            # a local copy; nothing is downloaded
 ```
 
-Compares bzip2, lbzip2, JS and WASM using both concurrency 1 and auto concurrency on the same preloaded archive. Auto concurrency falls back to 1 when the runtime has no Web Worker API. The archive is downloaded once over IPv4. Install `bzip2` and `lbzip2` to include their results.
-
-[benchmark.md](benchmark.md) is grouped by CPU model. Rerunning updates that CPU's section; a new CPU is appended. Raw trials go to `benchmark.md.json`. Decoder failures or mismatched hashes leave the Markdown unchanged.
-
-The default downloads a 220 MB archive once and runs three rounds. A local copy is used instead when it is passed as the first argument, named by `BZIP_BENCHMARK_FILE`, or present in the repository root under the URL's file name (archives there are git-ignored). File reads and SHA-256 validation happen outside the timed region. Timings include decoder startup, streaming and output buffering. Each trial needs memory for the compressed input and decompressed output.
+Results go to [benchmark.md](benchmark.md). By default, downloads the 220 MB replay
+archive once over IPv4 and runs three rounds. To use a local archive, pass its path,
+set `BZIP_BENCHMARK_FILE`, or place it in the repository root under the URL's file
+name. Each trial holds both compressed input and decompressed output in memory.
 
 | Environment variable        | Default                   |
 | --------------------------- | ------------------------- |

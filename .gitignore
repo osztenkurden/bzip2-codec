@@ -66,8 +66,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 experiments
+/repro/
 
 # local benchmark results (keep the Markdown report)
 /benchmark.md.json
+/benchmark-compress.md.json
 /results.json
 /wasm-results*.json

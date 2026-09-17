@@ -14,65 +14,75 @@ import { burrowsWheelerTransform } from '../format/block-sort.ts';
 import { BzipCrc32, combineCrc } from '../format/crc32.ts';
 import { createHuffmanEncodingTable, type HuffmanEncodingTable } from '../format/huffman-encoder.ts';
 import { BitWriter, type ByteSink } from '../internal/bit-writer.ts';
-import type { ResolvedCompressOptions } from '../types.ts';
+import type { BlockSize, ResolvedCompressOptions } from '../types.ts';
 
-const encodeMoveToFront = (
+export const encodeMoveToFront = (
 	lastColumn: Uint8Array,
 	used: Uint8Array
 ): { readonly symbols: Uint16Array; readonly alphabetSize: number } => {
 	const alphabetSize = used.reduce((count, value) => count + value, 0);
 	const endOfBlock = alphabetSize + 1;
 	const encoded = new Uint16Array(lastColumn.length + 1);
-	const order = new Uint8Array(alphabetSize);
-	const positions = new Uint8Array(256);
-
+	// Logical little-endian words, built with shifts rather than aliased views:
+	// host byte order is irrelevant. The first alphabetSize - 1 entries contain
+	// every used byte except front; padding is never reached before a real match.
+	const order = new Uint32Array(64);
+	let front = -1;
 	for (let byte = 0, index = 0; byte < 256; byte++) {
 		if (used[byte] === 0) continue;
-		order[index] = byte;
-		positions[byte] = index++;
+		if (front < 0) front = byte;
+		else {
+			order[index >>> 2]! |= byte << ((index & 3) * 8);
+			index++;
+		}
 	}
 
 	let outputLength = 0;
 	let zeroRunLength = 0;
 
-	const emit = (symbol: number) => {
-		encoded[outputLength++] = symbol;
-	};
-
-	const emitZeroRun = () => {
-		while (zeroRunLength > 0) {
-			if ((zeroRunLength & 1) !== 0) {
-				emit(RUN_A);
-				zeroRunLength--;
-			} else {
-				emit(RUN_B);
-				zeroRunLength -= 2;
-			}
-			zeroRunLength >>>= 1;
-		}
-	};
-
-	for (const byte of lastColumn) {
-		const position = positions[byte]!;
-
-		for (let index = position; index > 0; index--) {
-			const moved = order[index - 1]!;
-			order[index] = moved;
-			positions[moved] = index;
-		}
-		order[0] = byte;
-		positions[byte] = 0;
-
-		if (position === 0) {
+	for (let offset = 0; offset < lastColumn.length; offset++) {
+		const byte = lastColumn[offset]!;
+		if (front === byte) {
 			zeroRunLength++;
 		} else {
-			emitZeroRun();
-			emit(position + 1);
+			let position = 1;
+			if ((order[0]! & 255) === byte) {
+				order[0] = (order[0]! & ~255) | front;
+			} else {
+				const repeated = Math.imul(byte, 0x01010101);
+				let carry = front;
+				for (let i = 0; ; i++) {
+					const word = order[i]!;
+					const x = word ^ repeated;
+					// A borrow can flag later lanes too, but the lowest flagged lane
+					// is always the first actual match. Shift only through that lane.
+					const match = (x - 0x01010101) & ~x & 0x80808080;
+					const shifted = (word << 8) | carry;
+					if (match !== 0) {
+						const slot = (31 - Math.clz32(match & -match)) >>> 3;
+						const mask = 0xffffffff >>> ((3 - slot) * 8);
+						order[i] = (word & ~mask) | (shifted & mask);
+						position = i * 4 + slot + 1;
+						break;
+					}
+					order[i] = shifted;
+					carry = word >>> 24;
+				}
+			}
+			front = byte;
+			while (zeroRunLength > 0) {
+				encoded[outputLength++] = (zeroRunLength & 1) !== 0 ? RUN_A : RUN_B;
+				zeroRunLength = (zeroRunLength - 1) >>> 1;
+			}
+			encoded[outputLength++] = position + 1;
 		}
 	}
 
-	emitZeroRun();
-	emit(endOfBlock);
+	while (zeroRunLength > 0) {
+		encoded[outputLength++] = (zeroRunLength & 1) !== 0 ? RUN_A : RUN_B;
+		zeroRunLength = (zeroRunLength - 1) >>> 1;
+	}
+	encoded[outputLength++] = endOfBlock;
 
 	return { symbols: encoded.subarray(0, outputLength), alphabetSize };
 };
@@ -118,12 +128,6 @@ const chooseGroupCount = (symbolCount: number): number => {
 	return 2;
 };
 
-const tableCost = (table: HuffmanEncodingTable, symbols: Uint16Array, start: number, end: number): number => {
-	let cost = 0;
-	for (let index = start; index < end; index++) cost += table.lengths[symbols[index]!]!;
-	return cost;
-};
-
 const optimizeHuffmanTables = (
 	symbols: Uint16Array,
 	alphabetSize: number
@@ -147,15 +151,42 @@ const optimizeHuffmanTables = (
 
 	for (let iteration = 0; iteration < 4; iteration++) {
 		const groupFrequencies = Array.from({ length: groupCount }, () => new Uint32Array(alphabetSize));
+		// Three 10-bit costs per word: a group's maximum cost is 50 * 20 = 1000.
+		const costs012 = new Uint32Array(alphabetSize);
+		const costs345 = new Uint32Array(alphabetSize);
+		for (let symbol = 0; symbol < alphabetSize; symbol++) {
+			costs012[symbol] =
+				tables[0]!.lengths[symbol]! |
+				(tables[1]!.lengths[symbol]! << 10) |
+				((tables[2]?.lengths[symbol] ?? 0) << 20);
+			costs345[symbol] =
+				(tables[3]?.lengths[symbol] ?? 0) |
+				((tables[4]?.lengths[symbol] ?? 0) << 10) |
+				((tables[5]?.lengths[symbol] ?? 0) << 20);
+		}
+		const costs = new Uint16Array(6);
 
 		for (let selector = 0; selector < selectorCount; selector++) {
 			const start = selector * HUFFMAN_GROUP_SIZE;
 			const end = Math.min(start + HUFFMAN_GROUP_SIZE, symbols.length);
+			let c012 = 0,
+				c345 = 0;
+			for (let index = start; index < end; index++) {
+				const symbol = symbols[index]!;
+				c012 += costs012[symbol]!;
+				c345 += costs345[symbol]!;
+			}
+			costs[0] = c012 & 1023;
+			costs[1] = (c012 >>> 10) & 1023;
+			costs[2] = c012 >>> 20;
+			costs[3] = c345 & 1023;
+			costs[4] = (c345 >>> 10) & 1023;
+			costs[5] = c345 >>> 20;
 			let bestGroup = 0;
-			let bestCost = tableCost(tables[0]!, symbols, start, end);
+			let bestCost = costs[0]!;
 
 			for (let group = 1; group < groupCount; group++) {
-				const cost = tableCost(tables[group]!, symbols, start, end);
+				const cost = costs[group]!;
 				if (cost < bestCost) {
 					bestGroup = group;
 					bestCost = cost;
@@ -192,9 +223,9 @@ const emitSelectors = (writer: BitWriter, selectors: Uint8Array, groupCount: num
 	}
 };
 
-const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): void => {
+export const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): void => {
 	const used = new Uint8Array(256);
-	for (const byte of block) used[byte] = 1;
+	for (let index = 0; index < block.length; index++) used[block[index]!] = 1;
 
 	const { lastColumn, originalPointer } = burrowsWheelerTransform(block);
 	const mtf = encodeMoveToFront(lastColumn, used);
@@ -212,31 +243,24 @@ const encodeBlock = (writer: BitWriter, block: Uint8Array, blockCrc: number): vo
 
 	for (let selector = 0, index = 0; selector < optimized.selectors.length; selector++) {
 		const table = optimized.tables[optimized.selectors[selector]!]!;
-		for (let groupIndex = 0; groupIndex < HUFFMAN_GROUP_SIZE && index < mtf.symbols.length; groupIndex++) {
-			const symbol = mtf.symbols[index++]!;
-			writer.writeBits(table.lengths[symbol]!, table.codes[symbol]!);
-		}
+		const end = Math.min(index + HUFFMAN_GROUP_SIZE, mtf.symbols.length);
+		writer.writeHuffmanGroup(mtf.symbols, index, end, table.lengths, table.codes);
+		index = end;
 	}
 };
 
-export class EncoderEngine {
-	readonly #options: ResolvedCompressOptions;
-	readonly #writer: BitWriter;
-	readonly #block: Uint8Array;
+export class BlockCollector {
+	readonly #sink: (block: Uint8Array, crc: number) => void;
+	#block: Uint8Array;
 	#blockLength = 0;
 	#blockCrc = new BzipCrc32();
-	#combinedCrc = 0;
 	#runByte = -1;
 	#runLength = 0;
 	#finished = false;
 
-	constructor(options: ResolvedCompressOptions, sink: ByteSink) {
-		this.#options = options;
-		this.#writer = new BitWriter(sink, options.outputChunkSize);
-		this.#block = new Uint8Array(options.blockSize * 100_000);
-
-		for (const byte of BZIP_HEADER) this.#writer.writeByte(byte);
-		this.#writer.writeByte(0x30 + options.blockSize);
+	constructor(blockSize: BlockSize, sink: (block: Uint8Array, crc: number) => void) {
+		this.#sink = sink;
+		this.#block = new Uint8Array(blockSize * 100_000);
 	}
 
 	push(chunk: Uint8Array): void {
@@ -245,71 +269,98 @@ export class EncoderEngine {
 		}
 		if (!(chunk instanceof Uint8Array)) throw new TypeError('Bzip2 input chunks must be Uint8Array values');
 
-		for (const byte of chunk) {
-			const required = this.#requiredEncodedBytes(byte);
-			if (this.#block.length - this.#blockLength < required) this.#finishBlock();
-			this.#appendByte(byte);
+		const block = this.#block;
+		let length = this.#blockLength;
+		let runByte = this.#runByte;
+		let runLength = this.#runLength;
+		let crcStart = 0;
+		for (let index = 0; index < chunk.length; index++) {
+			const byte = chunk[index]!;
+			const required = byte !== runByte || runLength < 3 || runLength === 259 ? 1 : runLength === 3 ? 2 : 0;
+			if (block.length - length < required) {
+				this.#blockLength = length;
+				this.#blockCrc.updateBytes(chunk.subarray(crcStart, index));
+				this.#finishBlock();
+				crcStart = index;
+				length = 0;
+				runByte = -1;
+				runLength = 0;
+			}
+			if (byte !== runByte || runLength === 259) {
+				runByte = byte;
+				runLength = 1;
+				block[length++] = byte;
+			} else if (++runLength <= 3) {
+				block[length++] = byte;
+			} else if (runLength === 4) {
+				block[length++] = byte;
+				block[length++] = 0;
+			} else {
+				block[length - 1] = runLength - 4;
+			}
 		}
+		this.#blockLength = length;
+		this.#runByte = runByte;
+		this.#runLength = runLength;
+		this.#blockCrc.updateBytes(chunk.subarray(crcStart));
 	}
 
 	finish(): void {
 		if (this.#finished) return;
 		this.#finishBlock();
-		this.#writer.writeMarker(STREAM_END_MARKER_HIGH, STREAM_END_MARKER_LOW);
-		this.#writer.writeBits(32, this.#combinedCrc);
-		this.#writer.finish();
 		this.#finished = true;
 	}
 
-	#requiredEncodedBytes(byte: number): number {
-		if (byte !== this.#runByte) return 1;
-		if (this.#runLength < 3 || this.#runLength === 259) return 1;
-		if (this.#runLength === 3) return 2;
-		return 0;
-	}
-
-	#appendByte(byte: number): void {
-		this.#blockCrc.update(byte);
-
-		if (byte !== this.#runByte) {
-			this.#runByte = byte;
-			this.#runLength = 1;
-			this.#block[this.#blockLength++] = byte;
-			return;
-		}
-
-		this.#runLength++;
-
-		if (this.#runLength <= 3) {
-			this.#block[this.#blockLength++] = byte;
-			return;
-		}
-
-		if (this.#runLength === 4) {
-			this.#block[this.#blockLength++] = byte;
-			this.#block[this.#blockLength++] = 0;
-			return;
-		}
-
-		if (this.#runLength <= 259) {
-			this.#block[this.#blockLength - 1] = this.#runLength - 4;
-			return;
-		}
-
-		this.#runLength = 1;
-		this.#block[this.#blockLength++] = byte;
+	close(): void {
+		this.#finished = true;
+		this.#block = new Uint8Array(0);
+		this.#blockLength = 0;
 	}
 
 	#finishBlock(): void {
 		if (this.#blockLength === 0) return;
 
 		const crc = this.#blockCrc.value;
-		encodeBlock(this.#writer, this.#block.subarray(0, this.#blockLength), crc);
-		this.#writer.flush();
-		this.#combinedCrc = combineCrc(this.#combinedCrc, crc);
+		this.#sink(this.#block.subarray(0, this.#blockLength), crc);
 		this.#blockLength = 0;
 		this.#blockCrc = new BzipCrc32();
 		this.#runByte = -1;
 		this.#runLength = 0;
+	}
+}
+
+export class EncoderEngine {
+	readonly #writer: BitWriter;
+	readonly #collector: BlockCollector;
+	#combinedCrc = 0;
+	#finished = false;
+
+	constructor(options: ResolvedCompressOptions, sink: ByteSink) {
+		this.#writer = new BitWriter(sink, options.outputChunkSize);
+		for (const byte of BZIP_HEADER) this.#writer.writeByte(byte);
+		this.#writer.writeByte(0x30 + options.blockSize);
+		this.#collector = new BlockCollector(options.blockSize, (block, crc) => {
+			encodeBlock(this.#writer, block, crc);
+			this.#writer.flush();
+			this.#combinedCrc = combineCrc(this.#combinedCrc, crc);
+		});
+	}
+
+	push(chunk: Uint8Array): void {
+		this.#collector.push(chunk);
+	}
+
+	close(): void {
+		this.#finished = true;
+		this.#collector.close();
+	}
+
+	finish(): void {
+		if (this.#finished) return;
+		this.#collector.finish();
+		this.#writer.writeMarker(STREAM_END_MARKER_HIGH, STREAM_END_MARKER_LOW);
+		this.#writer.writeBits(32, this.#combinedCrc);
+		this.#writer.finish();
+		this.#finished = true;
 	}
 }

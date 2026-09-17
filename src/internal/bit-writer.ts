@@ -9,6 +9,7 @@ export class BitWriter {
 	#length = 0;
 	#partialByte = 0;
 	#partialBits = 0;
+	#completeBytes = 0;
 
 	constructor(sink: ByteSink, chunkSize = DEFAULT_CAPACITY) {
 		this.#sink = sink;
@@ -31,13 +32,98 @@ export class BitWriter {
 			throw new RangeError('Bit writes must contain between 0 and 32 bits');
 		}
 
-		for (let shift = count - 1; shift >= 0; shift--) {
-			this.writeBit(Math.floor(value / 2 ** shift) & 1);
+		// Consume at most eight bits at a time, including 32-bit CRC writes.
+		// No shift by 32 (which JavaScript would interpret as a shift by zero).
+		while (count > 0) {
+			const take = Math.min(8 - this.#partialBits, count);
+			count -= take;
+			this.#partialByte = (this.#partialByte << take) | ((value >>> count) & ((1 << take) - 1));
+			this.#partialBits += take;
+			if (this.#partialBits === 8) {
+				this.#writeCompleteByte(this.#partialByte);
+				this.#partialByte = 0;
+				this.#partialBits = 0;
+			}
 		}
 	}
 
 	writeByte(value: number): void {
 		this.writeBits(8, value);
+	}
+
+	/** Emit a group of encoder-owned Huffman codes (each at most 20 bits). */
+	writeHuffmanGroup(symbols: Uint16Array, start: number, end: number, lengths: Uint8Array, codes: Uint32Array): void {
+		let bits = this.#partialBits;
+		let value = this.#partialByte;
+		const buffer = this.#buffer;
+		let destination = this.#length;
+		let completeBytes = this.#completeBytes;
+		for (let index = start; index < end; index++) {
+			const symbol = symbols[index]!;
+			const count = lengths[symbol]!;
+			// At most seven pending bits plus a 20-bit code fit in a JS word.
+			value = (value << count) | codes[symbol]!;
+			bits += count;
+			while (bits >= 8) {
+				bits -= 8;
+				buffer[destination++] = value >>> bits;
+				completeBytes++;
+				if (destination === buffer.length) {
+					this.#length = destination;
+					this.#completeBytes = completeBytes;
+					this.flush();
+					destination = 0;
+				}
+			}
+			value &= (1 << bits) - 1;
+		}
+		this.#partialBits = bits;
+		this.#partialByte = value;
+		this.#length = destination;
+		this.#completeBytes = completeBytes;
+	}
+
+	get bitLength(): number {
+		return this.#completeBytes * 8 + this.#partialBits;
+	}
+
+	/** Append a block without inserting its final-byte padding into the member. */
+	writePacked(bytes: Uint8Array, bitLength: number): void {
+		if (!Number.isSafeInteger(bitLength) || bitLength < 0 || bitLength > bytes.length * 8)
+			throw new RangeError('Invalid packed bit length');
+		const whole = Math.floor(bitLength / 8);
+		if (this.#partialBits === 0) {
+			let offset = 0;
+			while (offset < whole) {
+				const count = Math.min(whole - offset, this.#buffer.length - this.#length);
+				this.#buffer.set(bytes.subarray(offset, offset + count), this.#length);
+				this.#length += count;
+				this.#completeBytes += count;
+				offset += count;
+				if (this.#length === this.#buffer.length) this.flush();
+			}
+		} else {
+			const shift = this.#partialBits,
+				mask = (1 << shift) - 1;
+			let partial = this.#partialByte;
+			let offset = 0;
+			while (offset < whole) {
+				const count = Math.min(whole - offset, this.#buffer.length - this.#length);
+				const end = offset + count;
+				let destination = this.#length;
+				while (offset < end) {
+					const byte = bytes[offset++]!;
+					this.#buffer[destination++] = (partial << (8 - shift)) | (byte >>> shift);
+					partial = byte & mask;
+				}
+				this.#length = destination;
+				this.#completeBytes += count;
+				if (destination === this.#buffer.length) this.flush();
+			}
+			this.#partialByte = partial;
+		}
+		const tail = bitLength & 7;
+		if (tail) this.writeBits(tail, bytes[whole]! >>> (8 - tail));
 	}
 
 	writeMarker(high: number, low: number): void {
@@ -63,6 +149,7 @@ export class BitWriter {
 	}
 
 	#writeCompleteByte(value: number): void {
+		this.#completeBytes++;
 		this.#buffer[this.#length++] = value;
 
 		if (this.#length === this.#buffer.length) this.flush();

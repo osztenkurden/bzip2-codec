@@ -18,19 +18,32 @@ export interface DecompressOptions {
 	outputChunkSize?: number;
 }
 
-export interface DecompressionStreamOptions extends DecompressOptions {
-	/** Yield between decoded blocks after this much work. Zero yields after every block; omit to never yield. */
-	yieldAfterMs?: number;
-	/**
-	 * Decode blocks on this many worker threads. 'auto' uses the reported hardware concurrency.
-	 * Defaults to 1, which decodes on the calling thread.
-	 */
-	concurrency?: number | 'auto';
-}
+/** Choose cooperative scheduling or workers; omit both for calling-thread execution. */
+export type ExecutionOptions =
+	| {
+			/** Yield at codec checkpoints after this much work. Zero yields at every checkpoint. */
+			yieldAfterMs?: number;
+			concurrency?: never;
+	  }
+	| {
+			/** Worker count, or reported hardware concurrency. Defaults to 1 (calling thread). */
+			concurrency?: number | 'auto';
+			yieldAfterMs?: never;
+	  };
+
+export type DecompressionStreamOptions = DecompressOptions & ExecutionOptions;
+
+/** Cooperative or worker-based compression scheduling. */
+export type CompressionStreamOptions = CompressOptions & ExecutionOptions;
 
 export interface ResolvedCompressOptions {
 	blockSize: BlockSize;
 	outputChunkSize: number;
+}
+
+export interface ResolvedCompressionStreamOptions extends ResolvedCompressOptions {
+	yieldAfterMs: number | undefined;
+	concurrency: number;
 }
 
 export interface ResolvedDecompressOptions {

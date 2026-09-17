@@ -8,10 +8,11 @@ import { pipeline } from 'node:stream/promises';
 import { spawnSync } from 'node:child_process';
 import { spawnProcess } from './scripts/benchmark/process.ts';
 import { fetchIPv4 } from './scripts/benchmark/fetch-ipv4.ts';
+import { DEFAULT_REPLAY_URL } from './scripts/benchmark/input.ts';
 import { median, REPORT_INTRO, updateCpuSection } from './scripts/benchmark/report.ts';
 
 const repository = import.meta.dirname;
-const defaultUrl = 'http://replay187.valve.net/730/003842189672549712349_0179118028.dem.bz2';
+const defaultUrl = DEFAULT_REPLAY_URL;
 const isHttp = (value: string) => /^https?:\/\//i.test(value);
 const source = process.argv[2];
 const url = source !== undefined && isHttp(source) ? source : (process.env.BZIP_BENCHMARK_URL ?? defaultUrl);
@@ -59,7 +60,7 @@ const cases: Case[] = [
 		concurrency: 1,
 		available: spawnSync('bzip2', ['--help']).status === 0
 	},
-	{ name: 'bzip2-codec (JS, 1)', mode: 'js', entry: 'index', concurrency: 1, available: true },
+	{ name: 'bzip2-codec (JS, 1)', mode: 'js', entry: 'js', concurrency: 1, available: true },
 	{ name: 'bzip2-codec (WASM, 1)', mode: 'js', entry: 'wasm', concurrency: 1, available: true },
 	{
 		name: 'lbzip2',
@@ -68,7 +69,7 @@ const cases: Case[] = [
 		concurrency: workers,
 		available: spawnSync('lbzip2', ['--help']).status === 0
 	},
-	{ name: 'bzip2-codec (JS, auto)', mode: 'js', entry: 'index', concurrency: 'auto', available: true },
+	{ name: 'bzip2-codec (JS, auto)', mode: 'js', entry: 'js', concurrency: 'auto', available: true },
 	{ name: 'bzip2-codec (WASM, auto)', mode: 'js', entry: 'wasm', concurrency: 'auto', available: true }
 ];
 

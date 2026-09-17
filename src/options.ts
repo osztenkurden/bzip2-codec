@@ -3,9 +3,11 @@ import { resolveHardwareConcurrency, supportsWorkers } from './parallel/pool.ts'
 import type {
 	BlockSize,
 	CompressOptions,
+	CompressionStreamOptions,
 	DecompressionStreamOptions,
 	DecompressOptions,
 	ResolvedCompressOptions,
+	ResolvedCompressionStreamOptions,
 	ResolvedDecompressionStreamOptions,
 	ResolvedDecompressOptions
 } from './types.ts';
@@ -16,6 +18,13 @@ const validateChunkSize = (value: number | undefined): number => {
 		throw new RangeError('outputChunkSize must be a positive safe integer');
 	}
 	return chunkSize;
+};
+
+const validateYieldAfterMs = (value: number | undefined): number | undefined => {
+	if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+		throw new RangeError('yieldAfterMs must be a non-negative finite number');
+	}
+	return value;
 };
 
 export const resolveCompressOptions = (options: CompressOptions = {}): ResolvedCompressOptions => {
@@ -59,29 +68,41 @@ export const resolveDecompressOptions = (options: DecompressOptions = {}): Resol
 	};
 };
 
+export const resolveCompressionStreamOptions = (
+	options: CompressionStreamOptions = {}
+): ResolvedCompressionStreamOptions => {
+	const resolved = resolveCompressOptions(options);
+	return {
+		...resolved,
+		yieldAfterMs: validateYieldAfterMs(options.yieldAfterMs),
+		concurrency: resolveConcurrency(options.concurrency)
+	};
+};
+
 export const resolveDecompressionStreamOptions = (
 	options: DecompressionStreamOptions = {}
 ): ResolvedDecompressionStreamOptions => {
 	const resolved = resolveDecompressOptions(options);
-	const { yieldAfterMs } = options;
+	const yieldAfterMs = validateYieldAfterMs(options.yieldAfterMs);
 
-	if (yieldAfterMs !== undefined && (!Number.isFinite(yieldAfterMs) || yieldAfterMs < 0)) {
-		throw new RangeError('yieldAfterMs must be a non-negative finite number');
-	}
+	const concurrency = resolveConcurrency(options.concurrency);
+	return { ...resolved, yieldAfterMs, concurrency };
+};
 
+const resolveConcurrency = (value: number | 'auto' | undefined): number => {
 	let concurrency = 1;
-	if (options.concurrency === 'auto') {
+	if (value === 'auto') {
 		// 'auto' means "whatever this runtime offers", so it degrades to the calling thread.
 		concurrency = supportsWorkers() ? resolveHardwareConcurrency() : 1;
-	} else if (options.concurrency !== undefined) {
-		if (!Number.isSafeInteger(options.concurrency) || options.concurrency < 1) {
+	} else if (value !== undefined) {
+		if (!Number.isSafeInteger(value) || value < 1) {
 			throw new RangeError("concurrency must be a positive safe integer or 'auto'");
 		}
-		if (options.concurrency > 1 && !supportsWorkers()) {
+		if (value > 1 && !supportsWorkers()) {
 			throw new TypeError('concurrency > 1 requires the Web Worker API, which this runtime does not provide');
 		}
-		concurrency = options.concurrency;
+		concurrency = value;
 	}
 
-	return { ...resolved, yieldAfterMs, concurrency };
+	return concurrency;
 };

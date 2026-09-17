@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import * as js from '../src/index.ts';
+import * as js from '../src/js.ts';
 import * as wasm from '../src/wasm/index.ts';
 import { tryDecodeBlock } from '../src/wasm/block.ts';
 
@@ -18,7 +18,7 @@ const outcome = (decode: typeof js.decompress, bytes: Uint8Array, options?: js.D
 test('WASM exposes the same API and actually decodes a block', () => {
 	assert.deepEqual(Object.keys(wasm).sort(), Object.keys(js).sort());
 	assert.equal(wasm.BzipError, js.BzipError);
-	assert.equal(wasm.compress, js.compress);
+	assert.notEqual(wasm.compress, js.compress);
 	assert.ok(tryDecodeBlock(sample.subarray(4), 0, 900000, Infinity));
 	assert.deepEqual(wasm.decompress(sample), js.decompress(sample));
 });
@@ -67,7 +67,10 @@ for (const concurrency of [1, 2]) {
 				const output = new Uint8Array(
 					await new Response(
 						source.pipeThrough(
-							wasm.createDecompressionStream({ concurrency, yieldAfterMs: 0, maxOutputBytes: raw.length })
+							wasm.createDecompressionStream({
+								...(concurrency === 1 ? { yieldAfterMs: 0 } : { concurrency }),
+								maxOutputBytes: raw.length
+							})
 						)
 					).arrayBuffer()
 				);
