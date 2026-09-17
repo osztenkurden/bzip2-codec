@@ -1,120 +1,53 @@
-# WASM compression implementation plan
+# Compression internals
 
-Status: single-threaded WASM compression, cooperative compression scheduling, and asynchronous buffer helpers are implemented. `/js` retains the JavaScript encoder with the same scheduling options. Parallel compression is implemented for both backends, including embedded worker scripts and CLI concurrency.
+The main and `/wasm` entries use lbzip2's `encode.c` and `divbwt.c` through
+[`encoder-bridge.c`](encoder-bridge.c). The encoder is freestanding, with no host
+imports and 8 MiB of fixed linear memory. See [build instructions](README.md) for
+the pinned source, local MTF optimization and generated artifacts.
 
-## API contract
+## Block lifecycle
 
-Keep `compress`/`decompress` synchronous and preserve their return types and defaults.
-Inapplicable options remain ignored at runtime. `ExecutionOptions` is a TypeScript
-union selecting either `yieldAfterMs` or `concurrency`; no runtime mutual-exclusion
-check is added. Reuse this union for future compression scheduling and asynchronous
-buffer helpers. Continue validating applicable option values.
+Each stream or worker has a private encoder instance; the compiled WASM module is
+cached. The bridge exposes input staging, collection status, output and CRC:
 
-`CompressionStreamOptions` and `DecompressionStreamOptions` combine their codec
-options with `ExecutionOptions`. `compressAsync` and `decompressAsync` feed bounded
-input slices through the stream implementation and collect the result. Scheduling
-defaults match the streams; a promise alone does not enable yielding. Compression
-concurrency follows the same resolution and validation rules as decompression. Backend selection uses
-package entries.
+1. Initialize the workspace for `blockSize * 100000` bytes with `CLUSTER_FACTOR` 8.
+2. Stage up to 64 KiB and call `collect`, retaining unconsumed input and RLE state
+   across calls. Input chunks do not define block boundaries.
+3. For a full or final nonempty block, call `encode`, then `transmit`.
+4. Copy the output into JS-owned buffers before resetting the encoder for reuse.
 
-## Encoder source and adapter
+The bridge complements lbzip2's internal block CRC before JS combines it into the
+member CRC. The engine emits a `BZhN` header, ordered blocks and an end marker.
+Empty input produces a valid empty member without encoding a block.
 
-Use lbzip2's encoder at the same pinned revision as the decoder:
-[`724352c0495904ab16e33817fae85b262f319318`](https://github.com/kjn/lbzip2/tree/724352c0495904ab16e33817fae85b262f319318).
-The inspected upstream interfaces are in
-[`encode.h`](https://github.com/kjn/lbzip2/blob/724352c0495904ab16e33817fae85b262f319318/src/encode.h),
-with implementations in `encode.c` and `divbwt.c`.
+lbzip2 returns byte-aligned blocks, which are concatenated without extra padding.
+JS workers instead return exact bit lengths for bit-level assembly. Each backend
+produces identical single/parallel output for the same input and block size;
+JS and WASM archives may differ.
 
-Vendor these files with their notices; retain shared `common.h`, `crctab.c`, and
-the upstream license. Compile a separate freestanding encoder module, with no
-pthread, filesystem, or host-runtime dependencies. Audit the required C shims
-and preserve assertions during initial integration.
+## Streams and scheduling
 
-The native block lifecycle is:
+The shared compression factory handles options, stream adapters and buffer
+collection for both backends. Engines expose `push`, `finish` and `close`.
+Async buffer helpers feed bounded slices through the stream and collect output.
 
-1. Allocate `encoder_alloc_size(blockSize * 100000)` and call `encoder_init`
-   with upstream `CLUSTER_FACTOR` (8).
-2. Repeatedly call `collect`, preserving its RLE state and honoring the returned
-   unconsumed input length. Do not equate input chunks with compression blocks.
-3. On a full block or final nonempty input, call `encode` to obtain the compressed
-   length and CRC, then `transmit` to obtain the encoded block.
-4. Copy emitted output into JS-owned buffers before reinitializing/reusing state.
-   Never call `encode` for an empty block.
+Cooperative compression checks its accumulated work budget after each input slice
+and finalization. Work carries across writes and excludes downstream idle time.
+A block's encoding remains synchronous. Scheduling options and defaults are in the
+[API reference](../README.md#execution-options).
 
-Expose bounded input staging, consumed length, block-ready status, output pointer
-and length, and block CRC through a small checked C bridge. Keep state private to
-each live stream; cache the compiled module, not a singleton mutable
-encoder shared between interleaved streams. Each worker reuses its own native instance. Release references on completion,
-error, and cancellation; evaluate instance pooling only after measuring memory.
+## Workers and snapshots
 
-lbzip2 uses `divbwt` and its own MTF/prefix-code pipeline. Keep these algorithms
-intact rather than porting the current JS prefix-doubling sorter. Upstream encoder
-workspace is approximately five bytes per maximum block byte plus fixed tables
-and state; size linear memory from the actual wasm32 allocation, stack, staging,
-and output requirements. Do not inherit the decoder's memory budget by assumption.
+The calling thread collects blocks; workers sort and encode them. At most twice
+the worker count is outstanding, including completed results awaiting ordered
+emission. Collection yields periodically. Completion, failure and cancellation
+release encoder state and close the pool.
 
-## Framing and shared orchestration
+- JS tasks transfer RLE bytes and a block CRC.
+- WASM tasks transfer a 276-byte header plus the collected RLE bytes. The header
+  records block size, length, CRC, RLE state and alphabet map. Workers restore these
+  fields into their own workspace; snapshots contain no pointers or sorting data.
+- Worker scripts are embedded and loaded from Blob URLs.
 
-Introduce a compression factory analogous to `createDecompressionFunctions`,
-accepting an encoder engine with `push`, `finish`, and cleanup operations. Keep
-option resolution, stream adapters, and buffer collection shared between backends.
-The WASM engine writes one `BZhN` header, ordered blocks, and one end marker with
-the combined CRC. Empty input produces a valid empty member.
-
-Unlike arbitrary bzip2 blocks, this pinned lbzip2 encoder deliberately aligns its
-blocks to bytes using redundant Huffman length deltas and, when needed, an unused
-selector. Preserve that upstream behavior: concatenate its returned block bytes
-without introducing padding or redesigning the JS bit writer. Test these blocks
-against both existing decoders, including their stricter metadata validation.
-
-`encode` returns the internal, uncomplemented CRC; normalize it before using the
-existing JS `combineCrc`, or match upstream `combine_crc` exactly. Verify against
-independent native decoding. Backend compressed bytes need not match the JS
-encoder because the block formation and entropy coding differ.
-
-## Delivery sequence
-
-1. **Implemented — baseline and contracts:** scheduling union, permissive runtime behavior, and
-   `benchmark:compress` reporting separately to `benchmark-compress.md`.
-2. **Implemented — single-threaded WASM:** vendor pinned source, bridge and generated bytes;
-   shared compression factory; wire main and `/wasm` to the encoder, retaining
-   `/js`. Extend build manifests, source hashes, NOTICE, package tests, CLI backend
-   selection, and documentation. Ordinary package builds must not require Clang.
-3. **Implemented — responsiveness and async buffers:** compression checks its
-   accumulated work budget after each input slice of at most 64 KiB and after
-   finalization. This slice size can finish at most one block, even with first-stage
-   RLE expansion. The budget persists across writes and excludes downstream idle
-   time. One block's sort remains synchronous, so `yieldAfterMs` is not a hard
-   deadline. Async buffer helpers reuse the stream adapters. Async decompression
-   also supports the existing workers.
-4. **Implemented — parallel compression:** compression-specific tasks use the
-   shared worker pool. At most twice the worker count of jobs remain outstanding,
-   including completed results waiting for earlier blocks. Ordered assembly
-   combines CRCs and writes one member; source chunks do not alter block boundaries.
-   JS collectors transfer RLE bytes and CRC; JS workers return exact bit lengths,
-   so partial bytes are joined without padding. WASM collectors transfer compact
-   snapshots with block size, RLE state, CRC, alphabet map, and actual collected
-   bytes. The adapter includes the pinned `encode.c` (with the local WASM MTF
-   optimization documented in [README.md](README.md)) to access its
-   private fields at compile time; no native pointers or sorting workspace are
-   serialized. Workers restore those fields into their own instance. Snapshot
-   overhead is 276 bytes per block, rather than the approximately five-bytes-per-
-   block-byte native workspace. Main-thread collection processes bounded slices
-   and yields periodically. Failure and cancellation close the pool and release
-   pending state; packaged workers are embedded Blob scripts.
-
-The compression benchmark now includes the actual WASM encoder alongside JS. Use bzip2 as the single-core reference and lbzip2 with all CPUs only.
-
-## Validation and performance gates
-
-Exercise levels 1–9, empty input, arbitrary input fragmentation, RLE boundaries,
-incompressible data, long runs, multiblock inputs, interleaved streams, cancellation,
-output ownership, and chunk-size bounds. Test round trips with both library
-decoders and native bzip2/lbzip2. Verify emitted block CRCs and member CRCs. Require
-buffer/stream equality within each backend for the same settings and input.
-
-Benchmark real and synthetic inputs: cold startup, steady-state throughput,
-compressed size, peak memory, and event-loop delay. The initial command records
-time, size, hashes, and native resource usage; add dedicated peak-memory and
-responsiveness measurements before making performance claims. File reads,
-hashing, and round-trip validation stay outside compression timings.
+See [Contributing](../CONTRIBUTING.md) for regression, interoperability, package
+and benchmark commands.

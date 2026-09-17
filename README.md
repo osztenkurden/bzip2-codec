@@ -95,14 +95,13 @@ strict concurrency validation. Unknown and inapplicable options are rejected.
 Use `--help`/`-h` globally or with a command, and `--version` for the package version.
 Use `--` before input paths beginning with a dash.
 
-Sources are never deleted, and input/output aliases of the same file are rejected.
-File output is written to a temporary sibling and published only after success;
-failures clean up the temporary file and preserve existing output. Without
-`--force`, publication cannot overwrite a file created concurrently. With
-`--force`, the output directory entry is replaced (an output symlink is replaced,
-not followed). Stdout cannot be rolled back and may contain partial output on an
-error. Errors go to stderr with codec error codes when available. Exit statuses
-are `0` for success, `1` for processing/I/O errors, and `2` for usage errors.
+Sources are kept, and input/output aliases are rejected. File output is published
+from a temporary sibling only on success; failures remove the temporary file.
+Existing output requires `--force`, including files created during processing.
+With `--force`, the directory entry is replaced, including output symlinks.
+Stdout may contain partial output on error. Errors go to stderr with codec error
+codes when available. Exit statuses: `0` success, `1` processing/I/O error,
+`2` usage error.
 
 ## Work with small values
 
@@ -126,11 +125,9 @@ const encoded = await compressAsync(bytes, { blockSize: 9, yieldAfterMs: 8 });
 const decoded = await decompressAsync(encoded, { yieldAfterMs: 8 });
 ```
 
-These return `Promise<Uint8Array>` and use the corresponding stream implementation
-with bounded input slices. They collect the entire output in memory. Do not mutate
-the input until the promise settles. Options have the same defaults as the stream
-APIs: returning a promise alone does not enable event-loop yielding. Set
-`yieldAfterMs`, or use `concurrency` for worker-based compression or decompression.
+These return `Promise<Uint8Array>` and collect the entire output in memory.
+They use the stream APIs' options and defaults: set `yieldAfterMs` for cooperative
+yielding or `concurrency` for workers. Do not mutate input until the promise settles.
 
 ## API reference
 
@@ -156,19 +153,8 @@ The buffer functions accept a `Uint8Array` as `input`. All options are optional.
 | `blockSize`       | `BlockSize` (`1` through `9`) | `9`      | Block size in units of 100,000 bytes.                         |
 | `outputChunkSize` | `number`                      | `65,536` | Maximum emitted chunk size in bytes; a positive safe integer. |
 
-`CompressionStreamOptions` adds `ExecutionOptions` for `createCompressionStream`
-and `compressAsync`. Set `yieldAfterMs` to a non-negative finite number to yield
-after that much accumulated compression work. Scheduling checkpoints occur after
-input slices of at most 65,536 bytes and after finalization; `0` yields at every
-checkpoint. Work accumulates across writes, excluding downstream idle time.
-One block's encoding remains synchronous, so this is not a hard time limit.
-Omitting `yieldAfterMs` disables cooperative yielding.
-
-Set compression `concurrency` to a positive safe integer or `'auto'` to use workers
-in `createCompressionStream` and `compressAsync`. The default is `1`, which runs
-on the calling thread. TypeScript requires choosing either `yieldAfterMs` or
-`concurrency` through the shared union. If JavaScript supplies both, workers take
-precedence when the resolved concurrency exceeds one, just as in decompression.
+`CompressionStreamOptions` adds the [execution options](#execution-options) for
+`createCompressionStream` and `compressAsync`.
 
 ### Decompression options
 
@@ -181,38 +167,42 @@ precedence when the resolved concurrency exceeds one, just as in decompression.
 | `maxOutputBytes`  | `number`              | `Infinity` | Maximum total decompressed bytes; a non-negative safe integer or `Infinity`. |
 | `outputChunkSize` | `number`              | `65,536`   | Maximum emitted chunk size in bytes; a positive safe integer.                |
 
-`DecompressionStreamOptions` adds these options for `createDecompressionStream` and `decompressAsync`:
+`DecompressionStreamOptions` adds the [execution options](#execution-options) for
+`createDecompressionStream` and `decompressAsync`.
 
-| Option         | Type               | Default  | Behavior                                                                                                                |
-| :------------- | :----------------- | :------- | :---------------------------------------------------------------------------------------------------------------------- |
-| `yieldAfterMs` | `number`           | Disabled | Yield between blocks after this much work; a non-negative finite number. `0` yields after every block.                  |
-| `concurrency`  | `number \| 'auto'` | `1`      | Maximum worker count; a positive safe integer, or use reported hardware concurrency. `1` decodes on the calling thread. |
+`outputChunkSize` limits emitted chunks, not total memory use or the size of a buffer result.
 
-`outputChunkSize` controls emitted chunks, not total memory use or the size of the result returned by the buffer functions.
+### Execution options
+
+Both stream APIs and asynchronous buffer helpers accept `ExecutionOptions`:
+
+| Option         | Type               | Default  | Behavior                                                                                                              |
+| :------------- | :----------------- | :------- | :-------------------------------------------------------------------------------------------------------------------- |
+| `yieldAfterMs` | `number`           | Disabled | Yield after this many milliseconds of accumulated work; a non-negative finite number. `0` yields at every checkpoint. |
+| `concurrency`  | `number \| 'auto'` | `1`      | Maximum worker count; a positive safe integer or reported hardware concurrency. `1` runs on the calling thread.       |
+
+Decompression checks the yield budget between blocks; compression checks after
+input slices of at most 65,536 bytes and after finalization. Work accumulates
+across writes, excluding downstream idle time. Neither interrupts block processing,
+so the budget is not a hard pause limit. Omitting `yieldAfterMs` disables yielding.
+
+TypeScript accepts either `yieldAfterMs` or `concurrency`. If JavaScript supplies
+both, workers take precedence when resolved concurrency exceeds one. Recognized
+options that do not apply to the selected API or execution mode are ignored.
 
 ## Control memory and responsiveness
 
-Set `maxOutputBytes` when decoding untrusted input to enforce an application-specific expansion limit:
+Set `maxOutputBytes` to cap decompressed output:
 
 ```ts
 await source.pipeThrough(createDecompressionStream({ maxOutputBytes: 100 * 1024 * 1024 })).pipeTo(destination);
 ```
 
-When decompression shares a JavaScript thread with latency-sensitive work, set `yieldAfterMs`:
-
-```ts
-await source.pipeThrough(createDecompressionStream({ yieldAfterMs: 8 })).pipeTo(destination);
-```
-
-Compression supports the same time-budget option in both backends:
+Use `yieldAfterMs` for cooperative yielding:
 
 ```ts
 await source.pipeThrough(createCompressionStream({ yieldAfterMs: 8 })).pipeTo(destination);
 ```
-
-Decompression yields between blocks; compression yields between bounded input slices and after finalization. Neither interrupts a block's processing, so `yieldAfterMs` is not a hard deadline. Omit it for maximum throughput.
-The `ExecutionOptions` union allows either `yieldAfterMs` or `concurrency`, never both in TypeScript.
-This is a typing constraint; runtime handling remains permissive and inapplicable options are ignored.
 
 ### Parallel compression and decompression
 
@@ -231,46 +221,46 @@ Workers require the Web Worker API, available in Bun, Deno and browsers. These r
 | Node.js without Web Workers | Falls back to `1`                                         | Throws `TypeError`                    |
 | Runtime with Web Workers    | Uses reported hardware concurrency, or `4` if unavailable | Uses up to the requested worker count |
 
-> [!NOTE]
-> Web Worker support is coming to Node.js: its [development documentation](https://github.com/nodejs/node/blob/main/doc/api/globals.md#class-worker) includes an experimental implementation behind `--experimental-web-worker`. Parallel decompression was verified on **Node.js `v27.0.0-nightly2026090729667e046b`** with this flag enabled. This package detects the API at runtime, enabling `concurrency` for both JavaScript and WASM decoding.
+On Node builds that provide it, enable `--experimental-web-worker`; the API is
+detected at runtime. See [Node's development documentation](https://github.com/nodejs/node/blob/main/doc/api/globals.md#class-worker).
 
-Output stays in order. Parallel compression writes one bzip2 member and produces exactly the same bytes as single-threaded compression with the same backend and block size. Decompression validates checksums. Worker scripts are embedded and loaded from Blob URLs; no asset configuration is needed. Browser CSP must allow `worker-src 'self' blob:`.
+Output stays in order. Parallel compression writes one member with the same bytes
+as single-threaded compression using the same backend and block size. It collects
+blocks on the calling thread and encodes on workers, with at most twice the worker
+count outstanding, including results awaiting emission. Collection yields periodically.
 
-Compression collects blocks on the calling thread and performs block sorting and encoding on workers. At most twice the worker count of blocks are outstanding, including completed blocks waiting for ordered emission. Input collection also yields periodically. These bounds cover pending work, not caller-owned input or already-emitted output.
-
-Memory use grows with concurrency because workers keep their own codec workspaces; decompression workers also buffer complete decoded blocks. Use fewer workers and an appropriate `maxOutputBytes` limit when memory is constrained. Choose `concurrency` instead of `yieldAfterMs` to use workers.
+Workers keep separate workspaces; decompression workers buffer complete decoded
+blocks. Use fewer workers to reduce memory use and `maxOutputBytes` to limit decoded
+output. Worker scripts are embedded as Blob URLs; browser CSP must allow
+`worker-src 'self' blob:`.
 
 ## WebAssembly
 
-The main `bzip2-codec` import uses the lbzip2-based WebAssembly encoder and decoder. The explicit `bzip2-codec/wasm` import remains available with the same API and implementation:
+The main import and `/wasm` use the embedded lbzip2-based WASM encoder and decoder.
+Use `/js` for pure JavaScript:
 
 ```ts
-import { decompress, createDecompressionStream } from 'bzip2-codec/wasm';
-
-// Synchronous decoding uses WASM too.
-const decoded = decompress(compressedBytes);
-
-// With a ReadableStream source and WritableStream destination:
-await source.pipeThrough(createDecompressionStream()).pipeTo(destination);
+import * as wasm from 'bzip2-codec/wasm'; // Same as 'bzip2-codec'
+import * as js from 'bzip2-codec/js';
 ```
 
-The encoder and decoder WASM modules are embedded and initialized independently on first use, with no extra assets or setup. To use pure JavaScript compression and decompression instead, import from `bzip2-codec/js`:
+All entries export the same functions, error class and types. WASM modules initialize
+independently on first use and require no external assets. The JS entry does not
+load WASM; select it explicitly when WASM is unavailable. For the CLI, use
+`--backend js`. JS and WASM may produce different valid archives.
 
-```ts
-import { compress, decompress, createDecompressionStream } from 'bzip2-codec/js';
-```
+| WASM instance |                            Fixed linear memory | Additional buffering                                   |
+| ------------- | ---------------------------------------------: | ------------------------------------------------------ |
+| Encoder       | 8 MiB per active stream, plus 8 MiB per worker | Transferred blocks and queued results                  |
+| Decoder       |                            16 MiB per instance | A complete decoded block in JavaScript before emission |
 
-All three entries export the same functions, error class and types. The JS entry does not load WASM. For the CLI, select `--backend js` when needed. There is no automatic fallback when WebAssembly is unavailable.
-
-Each WASM decoder instance uses **16 MiB of linear memory**, including its native input/output buffers, and buffers a complete decoded block in JavaScript before emission. Set `maxOutputBytes` to limit expansion. Node.js supports synchronous and single-threaded WASM decoding; workers have the same runtime requirements described above.
-
-Each active WASM compression stream uses its own **8 MiB of linear memory**, allocated on first use. Parallel compression adds **8 MiB per active worker**, plus transferred blocks and queued results. Workers receive compact RLE block snapshots instead of entire native sorting workspaces. Encoded chunks own their bytes; concurrent streams do not share mutable state. JS and WASM may produce different valid compressed bytes for the same input.
-
-If WebAssembly is unavailable or disallowed, use `bzip2-codec/js`. For browser CSP, allow `script-src 'self' 'wasm-unsafe-eval'` and, when using workers, `worker-src 'self' blob:`. See the [benchmark results](benchmark.md) to compare decoders and the [WASM build instructions](wasm/README.md) to rebuild the embedded encoder and decoder.
+Instances have separate mutable state, and emitted chunks own their bytes.
+For browser CSP, allow `script-src 'self' 'wasm-unsafe-eval'` and, for workers,
+`worker-src 'self' blob:`. See [WASM build instructions](wasm/README.md) to rebuild.
 
 ## Handle errors
 
-Malformed data, checksum failures, output limits, and invalid decoder state reject streams and async helpers or throw a `BzipError` from synchronous functions:
+Malformed data, checksum failures, output limits, and invalid codec state reject streams and async helpers or throw a `BzipError` from synchronous functions:
 
 ```ts
 import { BzipError, decompress } from 'bzip2-codec';
